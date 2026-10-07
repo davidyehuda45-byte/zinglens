@@ -5,12 +5,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: mlugg/setup-zig@v1
+      - uses: mlugg/setup-zig@v2
         with:
           version: 0.17.0
+      - run: zig version
       - run: zig build -Doptimize=ReleaseSafe
+      - run: zig build test
       - run: ./zig-out/bin/ziglens analyze --ci --format json --output ziglens.json .
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: ziglens-report
           path: ziglens.json
