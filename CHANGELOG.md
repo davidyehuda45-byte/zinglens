@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.5.1 — Output correctness + hardening audit
+
+- Results to stdout, diagnostics to stderr: `--json > file` and `jq` pipelines work
+- Unknown flags rejected (exit 3); `--` separator for paths starting with `-`
+- Progress chatter (`Scanning…`, `Wrote …`) to stderr — stdout stays pure data
+- Verified: 35 exit-code checks, 21 JSON-validity checks, secret/symlink/size probes,
+  localhost-only bind (OS-level), 6 release artifacts + SHA256SUMS
+
 ## v0.5.0 — Maps, ranking, diff, evolution, treemap
 
 - `map api|services|config|models` (endpoints, external services, env keys-only map, LOW-confidence model relations)

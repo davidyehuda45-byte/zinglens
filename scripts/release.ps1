@@ -15,14 +15,16 @@ New-Item -ItemType Directory -Force dist | Out-Null
 foreach ($x in $targets) {
   $out = "dist/ziglens-$($x.t)"
   New-Item -ItemType Directory -Force $out | Out-Null
-  zig build -Doptimize=ReleaseSafe -Dtarget=$($x.t) --prefix $out
+  $ztarget = "-Dtarget=$($x.t)"
+  zig build "-Doptimize=ReleaseSafe" "$ztarget" --prefix "$out"
   $bin = "$out/bin/ziglens$($x.ext)"
   if ($x.arc -eq "zip") {
-    Compress-Archive -Path $bin -DestinationPath "dist/ziglens-$($x.t).zip" -Force
+    Compress-Archive -Path "$bin" -DestinationPath "dist/ziglens-$($x.t).zip" -Force
   } else {
     tar -czf "dist/ziglens-$($x.t).tar.gz" -C "$out/bin" "ziglens$($x.ext)"
   }
 }
-Set-Location dist
+Push-Location dist
 Get-FileHash ziglens-* -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $($_.Path | Split-Path -Leaf)" } | Set-Content SHA256SUMS
+Pop-Location
 Write-Output "Release artifacts in dist/ (version $Version)"

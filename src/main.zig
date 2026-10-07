@@ -20,7 +20,7 @@ const pluginmod = @import("plugin.zig");
 const detectmod = @import("detect.zig");
 const similarmod = @import("similar.zig");
 
-const VERSION = "0.5.0";
+const VERSION = "0.5.1";
 
 const Cmd = enum {
     scan, analyze, search, symbol, refs, deps, graph, impact, deadcode,
@@ -65,6 +65,22 @@ fn parseCmd(s: []const u8) Cmd {
     if (std.mem.eql(u8, s, "diff")) return .diff;
     if (std.mem.eql(u8, s, "evolution")) return .evolution;
     return .unknown;
+}
+
+// Normal result output -> stdout (pipable: --json > file works).
+// Diagnostics/errors -> stderr. Exit codes carry failure.
+fn printOut(io: std.Io, comptime fmt: []const u8, args: anytype) void {
+    var buf: [8192]u8 = undefined;
+    var w = std.Io.File.stdout().writer(io, &buf);
+    w.interface.print(fmt, args) catch {};
+    w.interface.flush() catch {};
+}
+
+fn printErr(io: std.Io, comptime fmt: []const u8, args: anytype) void {
+    var buf: [2048]u8 = undefined;
+    var w = std.Io.File.stderr().writer(io, &buf);
+    w.interface.print(fmt, args) catch {};
+    w.interface.flush() catch {};
 }
 
 const Flags = struct {
@@ -113,7 +129,7 @@ const Snapshot = struct {
 };
 
 fn buildSnapshot(gpa: std.mem.Allocator, io: std.Io, root: []const u8, quiet: bool) !Snapshot {
-    if (!quiet) std.debug.print("Scanning project...\n", .{});
+    if (!quiet) printErr(io, "Scanning project...\n", .{});
     var cfg_opt: ?configmod.Config = if (configmod.load(gpa, io, root)) |c| c else |_| null;
     defer if (cfg_opt) |*c| c.deinit();
     var limits = scanner.Limits{};
@@ -272,8 +288,8 @@ fn findFileIdx(snap: *Snapshot, query: []const u8) ?usize {
     return null;
 }
 
-fn printHelp() void {
-    std.debug.print(
+fn printHelp(io: std.Io) void {
+    printOut(io,
         \\ZigLens v{s} — X-ray for your codebase (local-first, offline).
         \\
         \\Usage: ziglens [command] [args] [flags]
@@ -404,6 +420,7 @@ pub fn main(init: std.process.Init) !u8 {
 
     var cmd: Cmd = .help;
     var cmd_seen = false;
+    var dashdash = false;
     var positional = std.array_list.Managed([]const u8).init(gpa);
     defer positional.deinit();
     var flags = Flags{};
@@ -411,7 +428,11 @@ pub fn main(init: std.process.Init) !u8 {
 
     while (it.next()) |a| {
         const s: []const u8 = a;
-        if (std.mem.eql(u8, s, "--json")) {
+        if (dashdash) {
+            try positional.append(s);
+        } else if (std.mem.eql(u8, s, "--")) {
+            dashdash = true;
+        } else if (std.mem.eql(u8, s, "--json")) {
             flags.json = true;
         } else if (std.mem.eql(u8, s, "--quiet")) {
             flags.quiet = true;
@@ -423,7 +444,7 @@ pub fn main(init: std.process.Init) !u8 {
             flags.ci = true;
         } else if (std.mem.eql(u8, s, "--root")) {
             if (it.next()) |v| flags.root = v else {
-                std.debug.print("error: --root needs a value\n", .{});
+                printErr(io, "error: --root needs a value\n", .{});
                 return 3;
             }
         } else if (std.mem.startsWith(u8, s, "--root=")) {
@@ -433,7 +454,7 @@ pub fn main(init: std.process.Init) !u8 {
                 flags.format = v;
                 fmt_explicit = true;
             } else {
-                std.debug.print("error: --format needs a value\n", .{});
+                printErr(io, "error: --format needs a value\n", .{});
                 return 3;
             }
         } else if (std.mem.startsWith(u8, s, "--format=")) {
@@ -441,52 +462,52 @@ pub fn main(init: std.process.Init) !u8 {
             fmt_explicit = true;
         } else if (std.mem.eql(u8, s, "--output") or std.mem.eql(u8, s, "-o")) {
             if (it.next()) |v| flags.output = v else {
-                std.debug.print("error: --output needs a value\n", .{});
+                printErr(io, "error: --output needs a value\n", .{});
                 return 3;
             }
         } else if (std.mem.eql(u8, s, "--lang")) {
             if (it.next()) |v| flags.lang = i18n.parseLang(v) else {
-                std.debug.print("error: --lang needs en|id\n", .{});
+                printErr(io, "error: --lang needs en|id\n", .{});
                 return 3;
             }
         } else if (std.mem.startsWith(u8, s, "--lang=")) {
             flags.lang = i18n.parseLang(s["--lang=".len..]);
         } else if (std.mem.eql(u8, s, "--port")) {
             if (it.next()) |v| flags.port = std.fmt.parseInt(u16, v, 10) catch {
-                std.debug.print("error: --port must be 1..65535\n", .{});
+                printErr(io, "error: --port must be 1..65535\n", .{});
                 return 3;
             } else {
-                std.debug.print("error: --port needs a value\n", .{});
+                printErr(io, "error: --port needs a value\n", .{});
                 return 3;
             }
         } else if (std.mem.eql(u8, s, "--top")) {
             if (it.next()) |v| flags.top = std.fmt.parseInt(usize, v, 10) catch 20 else {
-                std.debug.print("error: --top needs a value\n", .{});
+                printErr(io, "error: --top needs a value\n", .{});
                 return 3;
             }
         } else if (std.mem.eql(u8, s, "--threads")) {
             if (it.next()) |_| {} else {
-                std.debug.print("error: --threads needs a value\n", .{});
+                printErr(io, "error: --threads needs a value\n", .{});
                 return 3;
             }
         } else if (std.mem.eql(u8, s, "--ignore")) {
             if (it.next()) |_| {} else {
-                std.debug.print("error: --ignore needs a value\n", .{});
+                printErr(io, "error: --ignore needs a value\n", .{});
                 return 3;
             }
         } else if (std.mem.eql(u8, s, "--include")) {
             if (it.next()) |_| {} else {
-                std.debug.print("error: --include needs a value\n", .{});
+                printErr(io, "error: --include needs a value\n", .{});
                 return 3;
             }
         } else if (std.mem.eql(u8, s, "--config")) {
             if (it.next()) |_| {} else {
-                std.debug.print("error: --config needs a value\n", .{});
+                printErr(io, "error: --config needs a value\n", .{});
                 return 3;
             }
         } else if (std.mem.eql(u8, s, "--template")) {
             if (it.next()) |v| flags.template = v else {
-                std.debug.print("error: --template needs a value\n", .{});
+                printErr(io, "error: --template needs a value\n", .{});
                 return 3;
             }
         } else if (std.mem.eql(u8, s, "--staged")) {
@@ -502,17 +523,20 @@ pub fn main(init: std.process.Init) !u8 {
                     cmd = .scan;
                     try positional.append(s);
                 } else {
-                    std.debug.print("Unknown command '{s}'. Run: ziglens help\n", .{s});
+                    printErr(io, "Unknown command '{s}'. Run: ziglens help\n", .{s});
                     return 3;
                 }
             }
         } else if (std.mem.startsWith(u8, s, "-") and !cmd_seen) {
             // global flag like --version handled as command already; -h etc.
             if (std.mem.eql(u8, s, "-h") or std.mem.eql(u8, s, "--help")) {
-                printHelp();
+                printHelp(io);
                 return 0;
             }
-            std.debug.print("Unknown flag '{s}'. Run: ziglens help\n", .{s});
+            printErr(io, "Unknown flag '{s}'. Run: ziglens help\n", .{s});
+            return 3;
+        } else if (std.mem.startsWith(u8, s, "-")) {
+            printErr(io, "Unknown flag '{s}'. Run: ziglens help\n", .{s});
             return 3;
         } else {
             try positional.append(s);
@@ -525,34 +549,34 @@ pub fn main(init: std.process.Init) !u8 {
     switch (cmd) {
         .version => {
             if (flags.json) {
-                std.debug.print("{{\"name\":\"ziglens\",\"version\":\"{s}\"}}\n", .{VERSION});
+                printOut(io, "{{\"name\":\"ziglens\",\"version\":\"{s}\"}}\n", .{VERSION});
             } else {
-                std.debug.print("ziglens {s}\n", .{VERSION});
+                printOut(io, "ziglens {s}\n", .{VERSION});
             }
             return 0;
         },
         .help => {
-            printHelp();
+            printHelp(io);
             return 0;
         },
         .completion => {
             const shell: []const u8 = if (positional.items.len > 0) positional.items[0] else "powershell";
             if (std.mem.eql(u8, shell, "powershell")) {
-                std.debug.print("$c=@('scan','analyze','search','symbol','refs','deps','graph','impact','deadcode','complexity','architecture','security','git','report','export','serve','watch','baseline','snapshot','compare','cache','plugin','map','top','diff','evolution','doctor','config','version','help'); Register-ArgumentCompleter -CommandName ziglens -ScriptBlock {{ param($w,$p,$l) $c | Where-Object {{ $_ -like \"$p*\" }} | ForEach-Object {{ [CompletionResult]::new($_,$_, 'ParameterValue', $_) }} }}\n", .{});
+                printOut(io, "$c=@('scan','analyze','search','symbol','refs','deps','graph','impact','deadcode','complexity','architecture','security','git','report','export','serve','watch','baseline','snapshot','compare','cache','plugin','map','top','diff','evolution','doctor','config','version','help'); Register-ArgumentCompleter -CommandName ziglens -ScriptBlock {{ param($w,$p,$l) $c | Where-Object {{ $_ -like \"$p*\" }} | ForEach-Object {{ [CompletionResult]::new($_,$_, 'ParameterValue', $_) }} }}\n", .{});
             } else if (std.mem.eql(u8, shell, "bash")) {
-                std.debug.print("_ziglens() {{ COMPREPLY=($(compgen -W 'scan analyze search symbol refs deps graph impact deadcode complexity architecture security git report export serve watch baseline snapshot compare cache plugin map top diff evolution doctor config version help' -- \"${{COMP_WORDS[COMP_CWORD]}}\")); }}; complete -F _ziglens ziglens\n", .{});
+                printOut(io, "_ziglens() {{ COMPREPLY=($(compgen -W 'scan analyze search symbol refs deps graph impact deadcode complexity architecture security git report export serve watch baseline snapshot compare cache plugin map top diff evolution doctor config version help' -- \"${{COMP_WORDS[COMP_CWORD]}}\")); }}; complete -F _ziglens ziglens\n", .{});
             } else if (std.mem.eql(u8, shell, "zsh")) {
-                std.debug.print("#compdef ziglens\n_arguments '1: :((scan analyze search symbol refs deps graph impact deadcode complexity architecture security git report export serve watch baseline snapshot compare cache plugin map top diff evolution doctor config version help))'\n", .{});
+                printOut(io, "#compdef ziglens\n_arguments '1: :((scan analyze search symbol refs deps graph impact deadcode complexity architecture security git report export serve watch baseline snapshot compare cache plugin map top diff evolution doctor config version help))'\n", .{});
             } else if (std.mem.eql(u8, shell, "fish")) {
-                std.debug.print("complete -c ziglens -f -n '__fish_use_subcommand' -a 'scan analyze search symbol refs deps graph impact deadcode complexity architecture security git report export serve watch baseline snapshot compare cache plugin map top diff evolution doctor config version help'\n", .{});
+                printOut(io, "complete -c ziglens -f -n '__fish_use_subcommand' -a 'scan analyze search symbol refs deps graph impact deadcode complexity architecture security git report export serve watch baseline snapshot compare cache plugin map top diff evolution doctor config version help'\n", .{});
             } else {
-                std.debug.print("Unknown shell '{s}'. Use: bash|zsh|fish|powershell\n", .{shell});
+                printErr(io, "Unknown shell '{s}'. Use: bash|zsh|fish|powershell\n", .{shell});
                 return 3;
             }
             return 0;
         },
         .doctor => return cmdDoctor(io, flags),
-        .config => return cmdConfig(flags),
+        .config => return cmdConfig(io, flags),
         else => {},
     }
 
@@ -584,7 +608,7 @@ pub fn main(init: std.process.Init) !u8 {
         .diff => return cmdDiff(gpa, io, root, flags, positional.items),
         .evolution => return cmdEvolution(gpa, io, root, flags, positional.items),
         else => {
-            printHelp();
+            printHelp(io);
             return 3;
         },
     }
@@ -597,7 +621,7 @@ fn isPathLike(s: []const u8) bool {
 // ---------------- scan ----------------
 fn cmdScan(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags) u8 {
     var snap = buildSnapshot(gpa, io, root, flags.quiet) catch |err| {
-        std.debug.print("Unable to scan '{s}'\nReason: {t}\nRun: ziglens doctor\n", .{ root, err });
+        printErr(io, "Unable to scan '{s}'\nReason: {t}\nRun: ziglens doctor\n", .{ root, err });
         return 1;
     };
     defer snap.deinit();
@@ -605,7 +629,7 @@ fn cmdScan(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags) u
 
     if (flags.json) {
         const js = buildProjectJson(gpa, &snap, root) catch {
-            std.debug.print("{{\"error\":\"json-build-failed\"}}\n", .{});
+            printErr(io, "{{\"error\":\"json-build-failed\"}}\n", .{});
             return 1;
         };
         defer gpa.free(js);
@@ -615,26 +639,26 @@ fn cmdScan(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags) u
 
     if (!flags.quiet) {
         const m = i18n.msg(flags.lang);
-        std.debug.print("\nZigLens\n\n{s}\n\n", .{m.done});
-        std.debug.print("Files             {d}\n", .{snap.res.files.items.len});
-        std.debug.print("Symbols           {d}\n", .{snap.total_symbols});
+        printOut(io, "\nZigLens\n\n{s}\n\n", .{m.done});
+        printOut(io, "Files             {d}\n", .{snap.res.files.items.len});
+        printOut(io, "Symbols           {d}\n", .{snap.total_symbols});
         // languages
-        std.debug.print("Languages         ", .{});
+        printOut(io, "Languages         ", .{});
         var first = true;
         for (0..snap.lang_counts.len) |li| {
             if (snap.lang_counts[li] == 0) continue;
             const l: langmod.Language = @enumFromInt(li);
             if (l == .unknown) continue;
-            if (!first) std.debug.print(", ", .{});
-            std.debug.print("{s}({d})", .{ l.name(), snap.lang_counts[li] });
+            if (!first) printOut(io, ", ", .{});
+            printOut(io, "{s}({d})", .{ l.name(), snap.lang_counts[li] });
             first = false;
         }
-        std.debug.print("\nDependencies      {d}\n", .{snap.graph.edges.items.len});
-        std.debug.print("\nArchitecture      {d}/100\n", .{h.arch});
-        std.debug.print("Security          {d}/100\n", .{h.sec});
-        std.debug.print("Maintainability   {d}/100\n", .{h.maint});
-        std.debug.print("\nPotential issues  {d}\n", .{snap.cycles.items.len + snap.arch.items.len + snap.dead.items.len});
-        std.debug.print("\nDashboard:\nhttp://127.0.0.1:{d}\n      (run: ziglens serve {s})\n", .{ flags.port, root });
+        printOut(io, "\nDependencies      {d}\n", .{snap.graph.edges.items.len});
+        printOut(io, "\nArchitecture      {d}/100\n", .{h.arch});
+        printOut(io, "Security          {d}/100\n", .{h.sec});
+        printOut(io, "Maintainability   {d}/100\n", .{h.maint});
+        printOut(io, "\nPotential issues  {d}\n", .{snap.cycles.items.len + snap.arch.items.len + snap.dead.items.len});
+        printOut(io, "\nDashboard:\nhttp://127.0.0.1:{d}\n      (run: ziglens serve {s})\n", .{ flags.port, root });
     }
     return 0;
 }
@@ -642,16 +666,16 @@ fn cmdScan(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags) u
 fn emitOutput(io: std.Io, flags: Flags, content: []const u8) !void {
     if (flags.output) |op| {
         try writeOutputFile(io, op, content);
-        if (!flags.quiet) std.debug.print("Wrote {s}\n", .{op});
+        if (!flags.quiet) printErr(io, "Wrote {s}\n", .{op});
     } else {
-        std.debug.print("{s}\n", .{content});
+        printOut(io, "{s}\n", .{content});
     }
 }
 
 // ---------------- analyze ----------------
 fn cmdAnalyze(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags) u8 {
     var snap = buildSnapshot(gpa, io, root, flags.quiet) catch |err| {
-        std.debug.print("Analysis failed: {t}\n", .{err});
+        printErr(io, "Analysis failed: {t}\n", .{err});
         return 1;
     };
     defer snap.deinit();
@@ -666,7 +690,7 @@ fn cmdAnalyze(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags
             changed.deinit();
         }
         if (changed.items.len == 0) {
-            std.debug.print("No staged changes.\n", .{});
+            printErr(io, "No staged changes.\n", .{});
             return 0;
         }
         var matched = matchChanged(&snap, changed.items);
@@ -675,11 +699,11 @@ fn cmdAnalyze(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags
         defer affected.deinit();
         const level: []const u8 = if (affected.items.len >= 30) "HIGH" else if (affected.items.len >= 10) "MEDIUM" else "LOW";
         if (flags.json) {
-            std.debug.print("{{\"staged\":{d},\"matched\":{d},\"affected\":{d},\"level\":\"{s}\"}}\n", .{ changed.items.len, matched.items.len, affected.items.len, level });
+            printOut(io, "{{\"staged\":{d},\"matched\":{d},\"affected\":{d},\"level\":\"{s}\"}}\n", .{ changed.items.len, matched.items.len, affected.items.len, level });
             return 0;
         }
-        std.debug.print("\nSTAGED analysis\nStaged files: {d} (in index: {d})\nAffected modules: {d}\nRisk: {s}\n", .{ changed.items.len, matched.items.len, affected.items.len, level });
-        for (matched.items) |m| std.debug.print("  ~ {s}\n", .{snap.paths[m]});
+        printOut(io, "\nSTAGED analysis\nStaged files: {d} (in index: {d})\nAffected modules: {d}\nRisk: {s}\n", .{ changed.items.len, matched.items.len, affected.items.len, level });
+        for (matched.items) |m| printOut(io, "  ~ {s}\n", .{snap.paths[m]});
         return 0;
     }
 
@@ -694,24 +718,24 @@ fn cmdAnalyze(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags
         return 0;
     }
 
-    std.debug.print("\nPROJECT HEALTH\n", .{});
-    std.debug.print("Architecture       {d}\n", .{h.arch});
-    std.debug.print("Security            {d}\n", .{h.sec});
-    std.debug.print("Maintainability     {d}\n", .{h.maint});
-    std.debug.print("Overall             {d}\n", .{h.overall});
-    std.debug.print("\nFILES              {d}\n", .{snap.res.files.items.len});
-    std.debug.print("SYMBOLS             {d}\n", .{snap.total_symbols});
-    std.debug.print("DEPENDENCIES         {d}\n", .{snap.graph.edges.items.len});
-    std.debug.print("\nDEAD CODE             {d}\n", .{snap.dead.items.len});
-    std.debug.print("ARCH VIOLATIONS         {d}\n", .{snap.arch.items.len});
-    std.debug.print("CYCLES                  {d}\n", .{snap.cycles.items.len});
+    printOut(io, "\nPROJECT HEALTH\n", .{});
+    printOut(io, "Architecture       {d}\n", .{h.arch});
+    printOut(io, "Security            {d}\n", .{h.sec});
+    printOut(io, "Maintainability     {d}\n", .{h.maint});
+    printOut(io, "Overall             {d}\n", .{h.overall});
+    printOut(io, "\nFILES              {d}\n", .{snap.res.files.items.len});
+    printOut(io, "SYMBOLS             {d}\n", .{snap.total_symbols});
+    printOut(io, "DEPENDENCIES         {d}\n", .{snap.graph.edges.items.len});
+    printOut(io, "\nDEAD CODE             {d}\n", .{snap.dead.items.len});
+    printOut(io, "ARCH VIOLATIONS         {d}\n", .{snap.arch.items.len});
+    printOut(io, "CYCLES                  {d}\n", .{snap.cycles.items.len});
     // top risk
-    std.debug.print("\nTOP RISK\n", .{});
+    printOut(io, "\nTOP RISK\n", .{});
     const n = @min(snap.complexity.items.len, 5);
     for (snap.complexity.items[0..n], 0..) |c, i| {
-        std.debug.print("{d}. {s} (complexity {d})\n", .{ i + 1, c.path, c.complexity });
+        printOut(io, "{d}. {s} (complexity {d})\n", .{ i + 1, c.path, c.complexity });
     }
-    std.debug.print("\nWhat should I fix first? (score = cx*2 + dependents*3 + violations*15 + dead*4)\n", .{});
+    printOut(io, "\nWhat should I fix first? (score = cx*2 + dependents*3 + violations*15 + dead*4)\n", .{});
     if (scoredFixes(gpa, &snap)) |fixes| {
         defer {
             var mf = fixes;
@@ -724,12 +748,12 @@ fn cmdAnalyze(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags
             if (fx.score == 0) break;
             const det = fixDetail(gpa, &snap, fx.idx) catch "?";
             defer if (!std.mem.eql(u8, det, "?")) gpa.free(det);
-            std.debug.print("{d}. {s} — score {d} ({s})\n", .{ i + 1, snap.paths[fx.idx], fx.score, det });
+            printOut(io, "{d}. {s} — score {d} ({s})\n", .{ i + 1, snap.paths[fx.idx], fx.score, det });
         }
     } else |_| {}
 
     if (flags.ci and (snap.cycles.items.len > 0 or snap.arch.items.len > 0)) {
-        std.debug.print("\nCI: FAILED (quality gate)\n", .{});
+        printErr(io, "\nCI: FAILED (quality gate)\n", .{});
         return 2;
     }
     return 0;
@@ -738,7 +762,7 @@ fn cmdAnalyze(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags
 // ---------------- search/symbol/refs ----------------
 fn cmdSearch(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags, positional: [][]const u8, cmd: Cmd) u8 {
     if (positional.len == 0) {
-        std.debug.print("Usage: ziglens {s} <query>\n", .{@tagName(cmd)});
+        printErr(io, "Usage: ziglens {s} <query>\n", .{@tagName(cmd)});
         return 3;
     }
     const q = positional[0];
@@ -772,7 +796,7 @@ fn cmdSearch(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags,
                 const suf = std.fmt.bufPrint(&b, ",\"file_idx\":{d}}}", .{idx}) catch return 1;
                 out.appendSlice(suf) catch return 1;
             } else {
-                std.debug.print("{s}\n", .{p});
+                printOut(io, "{s}\n", .{p});
             }
             count += 1;
             if (count >= 50) break;
@@ -803,7 +827,7 @@ fn cmdSearch(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags,
                         const suf = std.fmt.bufPrint(&b, ",\"kind\":\"{s}\",\"line\":{d}}}", .{ s.kind.name(), s.line }) catch return 1;
                         out.appendSlice(suf) catch return 1;
                     } else {
-                        std.debug.print("{s}\n  {s}:{d} [{s}]\n", .{ s.name, f.path, s.line, s.kind.name() });
+                        printOut(io, "{s}\n  {s}:{d} [{s}]\n", .{ s.name, f.path, s.line, s.kind.name() });
                     }
                     count += 1;
                     if (count >= 50) break;
@@ -818,7 +842,7 @@ fn cmdSearch(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags,
             if (f.facts) |*facts| {
                 for (facts.calls.items) |c| {
                     if (std.mem.eql(u8, c, q)) {
-                        if (!is_json) std.debug.print("called in {s}\n", .{f.path});
+                        if (!is_json) printOut(io, "called in {s}\n", .{f.path});
                         count += 1;
                         break;
                     }
@@ -830,7 +854,7 @@ fn cmdSearch(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags,
         out.appendSlice("]}") catch return 1;
         emitOutput(io, flags, out.items) catch return 1;
     } else if (count == 0) {
-        std.debug.print("No results for '{s}'\n", .{q});
+        printOut(io, "No results for '{s}'\n", .{q});
     }
     return 0;
 }
@@ -847,12 +871,12 @@ fn cmdDeps(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags, p
             emitOutput(io, flags, js) catch return 1;
             return 0;
         }
-        std.debug.print("Files: {d}, edges: {d}, cycles: {d}\n", .{ snap.paths.len, snap.graph.edges.items.len, snap.cycles.items.len });
+        printOut(io, "Files: {d}, edges: {d}, cycles: {d}\n", .{ snap.paths.len, snap.graph.edges.items.len, snap.cycles.items.len });
         return 0;
     }
     const q = positional[0];
     const idx = findFileIdx(&snap, q) orelse {
-        std.debug.print("File '{s}' not found in index. Try: ziglens search {s}\n", .{ q, q });
+        printErr(io, "File '{s}' not found in index. Try: ziglens search {s}\n", .{ q, q });
         return 1;
     };
     if (flags.json) {
@@ -880,50 +904,50 @@ fn cmdDeps(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags, p
         emitOutput(io, flags, out.items) catch return 1;
         return 0;
     }
-    std.debug.print("{s}\n", .{snap.paths[idx]});
-    std.debug.print("Needs ({d}):\n", .{snap.graph.adj.items[idx].items.len});
-    for (snap.graph.adj.items[idx].items) |to| std.debug.print("  -> {s}\n", .{snap.paths[to]});
-    std.debug.print("Needed by ({d}):\n", .{snap.graph.rev.items[idx].items.len});
-    for (snap.graph.rev.items[idx].items) |from| std.debug.print("  <- {s}\n", .{snap.paths[from]});
+    printOut(io, "{s}\n", .{snap.paths[idx]});
+    printOut(io, "Needs ({d}):\n", .{snap.graph.adj.items[idx].items.len});
+    for (snap.graph.adj.items[idx].items) |to| printOut(io, "  -> {s}\n", .{snap.paths[to]});
+    printOut(io, "Needed by ({d}):\n", .{snap.graph.rev.items[idx].items.len});
+    for (snap.graph.rev.items[idx].items) |from| printOut(io, "  <- {s}\n", .{snap.paths[from]});
     return 0;
 }
 
 fn cmdPath(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags, positional: [][]const u8) u8 {
     if (positional.len < 2) {
-        std.debug.print("Usage: ziglens path <A> <B>\n", .{});
+        printErr(io, "Usage: ziglens path <A> <B>\n", .{});
         return 3;
     }
     var snap = buildSnapshot(gpa, io, root, true) catch return 1;
     defer snap.deinit();
     const a = findFileIdx(&snap, positional[0]) orelse {
-        std.debug.print("File '{s}' not found\n", .{positional[0]});
+        printErr(io, "File '{s}' not found\n", .{positional[0]});
         return 1;
     };
     const b = findFileIdx(&snap, positional[1]) orelse {
-        std.debug.print("File '{s}' not found\n", .{positional[1]});
+        printErr(io, "File '{s}' not found\n", .{positional[1]});
         return 1;
     };
     var p = graphmod.shortestPath(gpa, &snap.graph, a, b) catch return 1;
     defer if (p) |*pp| pp.deinit();
     if (p == null) {
         if (flags.json) {
-            std.debug.print("{{\"from\":\"{s}\",\"to\":\"{s}\",\"path\":null}}\n", .{ positional[0], positional[1] });
+            printOut(io, "{{\"from\":\"{s}\",\"to\":\"{s}\",\"path\":null}}\n", .{ positional[0], positional[1] });
         } else {
-            std.debug.print("No dependency path {s} -> {s}\n", .{ snap.paths[a], snap.paths[b] });
+            printOut(io, "No dependency path {s} -> {s}\n", .{ snap.paths[a], snap.paths[b] });
         }
         return 0;
     }
     if (flags.json) {
-        std.debug.print("{{\"path\":[", .{});
+        printOut(io, "{{\"path\":[", .{});
         for (p.?.items, 0..) |node, i| {
-            if (i > 0) std.debug.print(",", .{});
-            std.debug.print("\"{s}\"", .{snap.paths[node]});
+            if (i > 0) printOut(io, ",", .{});
+            printOut(io, "\"{s}\"", .{snap.paths[node]});
         }
-        std.debug.print("]}}\n", .{});
+        printOut(io, "]}}\n", .{});
     } else {
         for (p.?.items, 0..) |node, i| {
-            if (i > 0) std.debug.print("  ↓\n", .{});
-            std.debug.print("{s}\n", .{snap.paths[node]});
+            if (i > 0) printOut(io, "  ↓\n", .{});
+            printOut(io, "{s}\n", .{snap.paths[node]});
         }
     }
     return 0;
@@ -932,13 +956,13 @@ fn cmdPath(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags, p
 // ---------------- impact ----------------
 fn cmdImpact(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags, positional: [][]const u8) u8 {
     if (positional.len == 0) {
-        std.debug.print("Usage: ziglens impact <file>\n", .{});
+        printErr(io, "Usage: ziglens impact <file>\n", .{});
         return 3;
     }
     var snap = buildSnapshot(gpa, io, root, true) catch return 1;
     defer snap.deinit();
     const idx = findFileIdx(&snap, positional[0]) orelse {
-        std.debug.print("File '{s}' not found\n", .{positional[0]});
+        printErr(io, "File '{s}' not found\n", .{positional[0]});
         return 1;
     };
     var cx: u32 = 1;
@@ -956,17 +980,17 @@ fn cmdImpact(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags,
         // pq borrowed into pre? need copy: rebuild safely
         _ = pre;
         // simpler emit via debug lines
-        std.debug.print("{{\"file\":\"{s}\",\"risk\":{d},\"level\":\"{s}\",\"direct\":{d},\"indirect\":{d},\"tests\":{d}}}\n", .{ snap.paths[idx], imp.risk, level, imp.direct, imp.indirect, imp.tests });
+        printOut(io, "{{\"file\":\"{s}\",\"risk\":{d},\"level\":\"{s}\",\"direct\":{d},\"indirect\":{d},\"tests\":{d}}}\n", .{ snap.paths[idx], imp.risk, level, imp.direct, imp.indirect, imp.tests });
         return 0;
     }
-    std.debug.print("\nPotential impact: {s}\n\n", .{level});
-    std.debug.print("Direct dependents: {d}\n", .{imp.direct});
-    std.debug.print("Indirect dependents: {d}\n", .{imp.indirect});
-    std.debug.print("Affected tests: {d}\n", .{imp.tests});
-    std.debug.print("Risk score: {d}/100\n", .{imp.risk});
+    printOut(io, "\nPotential impact: {s}\n\n", .{level});
+    printOut(io, "Direct dependents: {d}\n", .{imp.direct});
+    printOut(io, "Indirect dependents: {d}\n", .{imp.indirect});
+    printOut(io, "Affected tests: {d}\n", .{imp.tests});
+    printOut(io, "Risk score: {d}/100\n", .{imp.risk});
     if (imp.reasons.items.len > 0) {
-        std.debug.print("\nReasons:\n", .{});
-        for (imp.reasons.items) |r| std.debug.print("+ {s}\n", .{r});
+        printOut(io, "\nReasons:\n", .{});
+        for (imp.reasons.items) |r| printOut(io, "+ {s}\n", .{r});
     }
     return 0;
 }
@@ -1002,11 +1026,11 @@ fn cmdDeadcode(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flag
         return 0;
     }
     if (snap.dead.items.len == 0) {
-        std.debug.print("No dead code candidates found.\n", .{});
+        printOut(io, "No dead code candidates found.\n", .{});
         return 0;
     }
     for (snap.dead.items) |*d| {
-        std.debug.print("[{s}] {s} :: {s} ({s}) — {s}\n", .{ analysis.confidenceName(d.confidence), d.file, d.name, d.kind, d.reason });
+        printOut(io, "[{s}] {s} :: {s} ({s}) — {s}\n", .{ analysis.confidenceName(d.confidence), d.file, d.name, d.kind, d.reason });
     }
     return 0;
 }
@@ -1035,9 +1059,9 @@ fn cmdComplexity(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Fl
         emitOutput(io, flags, out.items) catch return 1;
         return 0;
     }
-    std.debug.print("Top {d} complexity:\n", .{n});
+    printOut(io, "Top {d} complexity:\n", .{n});
     for (snap.complexity.items[0..n]) |*c| {
-        std.debug.print("  {d}\t{s} (loc {d}, nesting {d})\n", .{ c.complexity, c.path, c.loc, c.nesting });
+        printOut(io, "  {d}\t{s} (loc {d}, nesting {d})\n", .{ c.complexity, c.path, c.loc, c.nesting });
     }
     return 0;
 }
@@ -1067,22 +1091,22 @@ fn cmdArchitecture(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: 
         return 0;
     }
     if (snap.cycles.items.len == 0 and snap.arch.items.len == 0) {
-        std.debug.print("{s}\n\nThis is either good architecture,\nor your analyzer needs improvement.\n", .{i18n.msg(flags.lang).no_violations});
+        printOut(io, "{s}\n\nThis is either good architecture,\nor your analyzer needs improvement.\n", .{i18n.msg(flags.lang).no_violations});
         return 0;
     }
     if (snap.cycles.items.len > 0) {
-        std.debug.print("Circular dependencies ({d}):\n", .{snap.cycles.items.len});
+        printOut(io, "Circular dependencies ({d}):\n", .{snap.cycles.items.len});
         for (snap.cycles.items, 0..) |*c, i| {
-            std.debug.print("  cycle {d}: ", .{i + 1});
+            printOut(io, "  cycle {d}: ", .{i + 1});
             for (c.items, 0..) |node, j| {
-                if (j > 0) std.debug.print(" -> ", .{});
-                std.debug.print("{s}", .{snap.paths[node]});
+                if (j > 0) printOut(io, " -> ", .{});
+                printOut(io, "{s}", .{snap.paths[node]});
             }
-            std.debug.print("\n", .{});
+            printOut(io, "\n", .{});
         }
     }
     for (snap.arch.items) |*v| {
-        std.debug.print("[{s}] {s}: {s}\n", .{ v.id, analysis.severityName(v.severity), v.message });
+        printOut(io, "[{s}] {s}: {s}\n", .{ v.id, analysis.severityName(v.severity), v.message });
     }
     return 0;
 }
@@ -1144,11 +1168,11 @@ fn cmdSecurity(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flag
         return 0;
     }
     if (all.items.len == 0) {
-        std.debug.print("No security findings.\n", .{});
+        printOut(io, "No security findings.\n", .{});
         return 0;
     }
     for (all.items) |*fd| {
-        std.debug.print("[{s}] {s} {s}:{d}\n  {s}\n  fix: {s}\n", .{ fd.id, analysis.severityName(fd.severity), fd.file, fd.line, fd.masked, fd.remediation });
+        printOut(io, "[{s}] {s} {s}:{d}\n  {s}\n  fix: {s}\n", .{ fd.id, analysis.severityName(fd.severity), fd.file, fd.line, fd.masked, fd.remediation });
     }
     return 0;
 }
@@ -1255,10 +1279,10 @@ fn cmdGit(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags, po
         emitOutput(io, flags, out.items) catch return 1;
         return 0;
     }
-    std.debug.print("Branch: {s} | Commits: {d} | Contributors: {d}\nHotspots (by dependents):\n", .{ branch, commits, contributors });
+    printOut(io, "Branch: {s} | Commits: {d} | Contributors: {d}\nHotspots (by dependents):\n", .{ branch, commits, contributors });
     const n = @min(order.items.len, 10);
     for (order.items[0..n]) |idx| {
-        std.debug.print("  {s} — {d} dependents\n", .{ snap.paths[idx], snap.graph.rev.items[idx].items.len });
+        printOut(io, "  {s} — {d} dependents\n", .{ snap.paths[idx], snap.graph.rev.items[idx].items.len });
     }
     // git log churn (needs git binary + repo; silent fallback)
     if (gitmod.getLog(gpa, io, root, 200)) |logcommits| {
@@ -1274,10 +1298,10 @@ fn cmdGit(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags, po
                     for (ch.items) |*x| gpa.free(x.path);
                     ch.deinit();
                 }
-                std.debug.print("\nChurn (top changed files, {d} commits scanned):\n", .{lc.items.len});
+                printOut(io, "\nChurn (top changed files, {d} commits scanned):\n", .{lc.items.len});
                 const cn = @min(ch.items.len, 10);
                 for (ch.items[0..cn]) |*x| {
-                    std.debug.print("  {s} — {d} commits, {d} authors\n", .{ x.path, x.commits, x.authors });
+                    printOut(io, "  {s} — {d} commits, {d} authors\n", .{ x.path, x.commits, x.authors });
                 }
             }
         }
@@ -1382,7 +1406,7 @@ fn cmdReportTemplate(gpa: std.mem.Allocator, io: std.Io, snap: *Snapshot, root: 
         const s2 = std.fmt.bufPrint(&b, "+ {d} files scanned\n+ {d} dependencies\n+ {d} architecture warnings\n", .{ snap.paths.len, snap.graph.edges.items.len, snap.arch.items.len + snap.cycles.items.len }) catch return 1;
         out.appendSlice(s2) catch return 1;
     } else {
-        std.debug.print("Unknown template '{s}'. Use: default|security|architecture|technical-debt|executive|ci\n", .{flags.template});
+        printErr(io, "Unknown template '{s}'. Use: default|security|architecture|technical-debt|executive|ci\n", .{flags.template});
         return 3;
     }
     emitOutput(io, flags, out.items) catch return 1;
@@ -1399,19 +1423,19 @@ fn cmdServe(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags) 
     // localhost only (Spec Sec.28). Refuse --host != localhost.
     const addr = std.Io.net.IpAddress{ .ip4 = .loopback(flags.port) };
     var server = addr.listen(io, .{ .reuse_address = true }) catch |err| {
-        std.debug.print("Cannot bind 127.0.0.1:{d}: {t}\n", .{ flags.port, err });
+        printErr(io, "Cannot bind 127.0.0.1:{d}: {t}\n", .{ flags.port, err });
         return 1;
     };
     defer server.deinit(io);
-    std.debug.print("ZigLens dashboard: http://127.0.0.1:{d}  (root: {s}, Ctrl+C to stop)\n", .{ flags.port, root });
+    printOut(io, "ZigLens dashboard: http://127.0.0.1:{d}  (root: {s}, Ctrl+C to stop)\n", .{ flags.port, root });
 
     while (true) {
         const stream = server.accept(io) catch |err| {
-            if (flags.verbose) std.debug.print("accept: {t}\n", .{err});
+            if (flags.verbose) printErr(io, "accept: {t}\n", .{err});
             continue;
         };
         handleHttp(gpa, io, stream, &snap, root, js) catch |err| {
-            if (flags.verbose) std.debug.print("http: {t}\n", .{err});
+            if (flags.verbose) printErr(io, "http: {t}\n", .{err});
         };
         stream.close(io);
     }
@@ -1666,18 +1690,18 @@ fn handleHttp(gpa: std.mem.Allocator, io: std.Io, stream: std.Io.net.Stream, sna
 
 // ---------------- watch ----------------
 fn cmdWatch(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags) u8 {
-    std.debug.print("Watching {s} (poll every 2s, incremental, Ctrl+C to stop)...\n", .{root});
+    printOut(io, "Watching {s} (poll every 2s, incremental, Ctrl+C to stop)...\n", .{root});
     var prev_fp: u64 = 0;
     var iter: usize = 0;
     while (true) {
         const fp = quickFingerprint(gpa, io, root) catch 0;
         if (iter == 0 or fp != prev_fp) {
             var snap = buildSnapshot(gpa, io, root, true) catch {
-                std.debug.print("scan failed\n", .{});
+                printErr(io, "scan failed\n", .{});
                 return 1;
             };
             defer snap.deinit();
-            std.debug.print("[{d}] files={d} symbols={d} deps={d}{s}\n", .{ iter, snap.paths.len, snap.total_symbols, snap.graph.edges.items.len, if (iter > 0) " (changed)" else "" });
+            printOut(io, "[{d}] files={d} symbols={d} deps={d}{s}\n", .{ iter, snap.paths.len, snap.total_symbols, snap.graph.edges.items.len, if (iter > 0) " (changed)" else "" });
             prev_fp = fp;
         }
         iter += 1;
@@ -1721,36 +1745,36 @@ fn quickFingerprint(gpa: std.mem.Allocator, io: std.Io, root: []const u8) !u64 {
 // ---------------- doctor/config ----------------
 fn cmdDoctor(io: std.Io, flags: Flags) u8 {
     _ = flags;
-    std.debug.print("ZigLens doctor\n", .{});
-    std.debug.print("  zig: {s}\n", .{VERSION});
+    printOut(io, "ZigLens doctor\n", .{});
+    printOut(io, "  zig: {s}\n", .{VERSION});
     // cwd
     var buf: [1024]u8 = undefined;
     if (std.process.currentPath(io, &buf)) |n| {
-        std.debug.print("  cwd: {s}\n", .{buf[0..n]});
+        printOut(io, "  cwd: {s}\n", .{buf[0..n]});
     } else |err| {
-        std.debug.print("  cwd: ERROR {t}\n", .{err});
+        printOut(io, "  cwd: ERROR {t}\n", .{err});
     }
     // .git
     const cwd = std.Io.Dir.cwd();
     if (cwd.access(io, ".git", .{})) {
-        std.debug.print("  git: found .git\n", .{});
+        printOut(io, "  git: found .git\n", .{});
     } else |_| {
-        std.debug.print("  git: no .git (git features limited)\n", .{});
+        printOut(io, "  git: no .git (git features limited)\n", .{});
     }
     // port
-    std.debug.print("  dashboard default: http://127.0.0.1:4173 (localhost only: OK)\n", .{});
-    std.debug.print("  network: OFF by default (serve binds 127.0.0.1)\n", .{});
-    std.debug.print("  fs: read-only (no project files modified)\n", .{});
-    std.debug.print("OK\n", .{});
+    printOut(io, "  dashboard default: http://127.0.0.1:4173 (localhost only: OK)\n", .{});
+    printOut(io, "  network: OFF by default (serve binds 127.0.0.1)\n", .{});
+    printOut(io, "  fs: read-only (no project files modified)\n", .{});
+    printOut(io, "OK\n", .{});
     return 0;
 }
 
-fn cmdConfig(flags: Flags) u8 {
+fn cmdConfig(io: std.Io, flags: Flags) u8 {
     if (flags.json) {
-        std.debug.print("{{\"lang\":\"{s}\",\"port\":{d},\"format\":\"{s}\"}}\n", .{ if (flags.lang == .id) "id" else "en", flags.port, flags.format });
+        printOut(io, "{{\"lang\":\"{s}\",\"port\":{d},\"format\":\"{s}\"}}\n", .{ if (flags.lang == .id) "id" else "en", flags.port, flags.format });
     } else {
-        std.debug.print("lang={s}\nport={d}\nformat={s}\nroot={s}\n", .{ if (flags.lang == .id) "id" else "en", flags.port, flags.format, flags.root });
-        std.debug.print("# config file: .ziglens.toml (.ziglensignore supported)\n", .{});
+        printOut(io, "lang={s}\nport={d}\nformat={s}\nroot={s}\n", .{ if (flags.lang == .id) "id" else "en", flags.port, flags.format, flags.root });
+        printOut(io, "# config file: .ziglens.toml (.ziglensignore supported)\n", .{});
     }
     return 0;
 }
@@ -1767,10 +1791,10 @@ fn cmdBaseline(gpa: std.mem.Allocator, io: std.Io, def_root: []const u8, flags: 
     defer msgs.deinit();
     for (snap.arch.items) |*a| msgs.append(a.message) catch {};
     store.saveBaseline(gpa, io, target, snap.cycles.items.len, snap.arch.items.len, snap.dead.items.len, snap.paths.len, snap.graph.edges.items.len, msgs.items) catch {
-        std.debug.print("Failed to write .ziglens/baseline.json\n", .{});
+        printErr(io, "Failed to write .ziglens/baseline.json\n", .{});
         return 1;
     };
-    if (!flags.quiet) std.debug.print("Baseline created: cycles={d} violations={d} dead={d} files={d} deps={d}\n", .{ snap.cycles.items.len, snap.arch.items.len, snap.dead.items.len, snap.paths.len, snap.graph.edges.items.len });
+    if (!flags.quiet) printOut(io, "Baseline created: cycles={d} violations={d} dead={d} files={d} deps={d}\n", .{ snap.cycles.items.len, snap.arch.items.len, snap.dead.items.len, snap.paths.len, snap.graph.edges.items.len });
     return 0;
 }
 
@@ -1790,7 +1814,7 @@ fn cmdSnapshot(gpa: std.mem.Allocator, io: std.Io, def_root: []const u8, flags: 
 
 fn cmdCompare(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags) u8 {
     const base_opt = store.loadBaseline(gpa, io) catch null;    if (base_opt == null) {
-        std.debug.print("No baseline. Run: ziglens baseline create {s}\n", .{root});
+        printErr(io, "No baseline. Run: ziglens baseline create {s}\n", .{root});
         return 1;
     }
     var b = base_opt.?;
@@ -1824,19 +1848,19 @@ fn cmdCompare(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags
         if (!still) removed += 1;
     }
     if (flags.json) {
-        std.debug.print("{{\"baseline\":{{\"violations\":{d},\"files\":{d},\"deps\":{d}}},\"current\":{{\"violations\":{d},\"files\":{d},\"deps\":{d}}},\"new\":{d},\"removed\":{d}}}\n", .{ old_v, b.files, b.deps, new_v, snap.paths.len, snap.graph.edges.items.len, new_msgs.items.len, removed });
+        printOut(io, "{{\"baseline\":{{\"violations\":{d},\"files\":{d},\"deps\":{d}}},\"current\":{{\"violations\":{d},\"files\":{d},\"deps\":{d}}},\"new\":{d},\"removed\":{d}}}\n", .{ old_v, b.files, b.deps, new_v, snap.paths.len, snap.graph.edges.items.len, new_msgs.items.len, removed });
     } else {
-        std.debug.print("Baseline: violations={d} files={d} deps={d}\nCurrent:  violations={d} files={d} deps={d}\n", .{ old_v, b.files, b.deps, new_v, snap.paths.len, snap.graph.edges.items.len });
+        printOut(io, "Baseline: violations={d} files={d} deps={d}\nCurrent:  violations={d} files={d} deps={d}\n", .{ old_v, b.files, b.deps, new_v, snap.paths.len, snap.graph.edges.items.len });
         if (new_msgs.items.len > 0) {
-            std.debug.print("\nNew violations ({d}):\n", .{new_msgs.items.len});
-            for (new_msgs.items) |m| std.debug.print("  + {s}\n", .{m});
+            printOut(io, "\nNew violations ({d}):\n", .{new_msgs.items.len});
+            for (new_msgs.items) |m| printOut(io, "  + {s}\n", .{m});
         }
-        if (removed > 0) std.debug.print("\nResolved since baseline: {d}\n", .{removed});
+        if (removed > 0) printOut(io, "\nResolved since baseline: {d}\n", .{removed});
         if (new_msgs.items.len > 0) {
-            std.debug.print("\nCI would FAIL (regression)\n", .{});
+            printErr(io, "\nCI would FAIL (regression)\n", .{});
             return 2;
         }
-        std.debug.print("No regression.\n", .{});
+        printOut(io, "No regression.\n", .{});
     }
     return 0;
 }
@@ -1942,7 +1966,7 @@ fn readFileCapped(gpa: std.mem.Allocator, io: std.Io, root: []const u8, dir: *st
 fn cmdMap(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags, positional: [][]const u8) u8 {
     const sub: []const u8 = if (positional.len > 0) positional[0] else "";
     if (!std.mem.eql(u8, sub, "api") and !std.mem.eql(u8, sub, "services") and !std.mem.eql(u8, sub, "config") and !std.mem.eql(u8, sub, "models")) {
-        std.debug.print("Usage: ziglens map <api|services|config|models> [--json]\n", .{});
+        printErr(io, "Usage: ziglens map <api|services|config|models> [--json]\n", .{});
         return 3;
     }
     var snap = buildSnapshot(gpa, io, root, true) catch return 1;
@@ -1994,15 +2018,15 @@ fn cmdMap(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags, po
             emitOutput(io, flags, out.items) catch return 1;
             return 0;
         }
-        if (all.items.len == 0) std.debug.print("No API endpoints detected.\n", .{});
-        for (all.items) |*e| std.debug.print("{s} {s}  ({s}:{d})\n", .{ e.method, e.path, e.file, e.line });
+        if (all.items.len == 0) printOut(io, "No API endpoints detected.\n", .{});
+        for (all.items) |*e| printOut(io, "{s} {s}  ({s}:{d})\n", .{ e.method, e.path, e.file, e.line });
         return 0;
     }
 
     if (std.mem.eql(u8, sub, "services")) {
         var seen_svc = std.StringHashMap(void).init(gpa);
         defer seen_svc.deinit();
-        if (flags.json) std.debug.print("{{\"services\":[", .{});
+        if (flags.json) printOut(io, "{{\"services\":[", .{});
         var first = true;
         for (snap.paths) |p| {
             const content = readFileCapped(gpa, io, root, &dir, p, 2 * 1024 * 1024) orelse continue;
@@ -2011,17 +2035,17 @@ fn cmdMap(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags, po
             defer uses.deinit();
             for (uses.items) |*u| {
                 if (flags.json) {
-                    if (!first) std.debug.print(",", .{});
+                    if (!first) printOut(io, ",", .{});
                     first = false;
-                    std.debug.print("{{\"service\":\"{s}\",\"file\":\"{s}\",\"line\":{d}}}", .{ u.service, u.file, u.line });
+                    printOut(io, "{{\"service\":\"{s}\",\"file\":\"{s}\",\"line\":{d}}}", .{ u.service, u.file, u.line });
                 } else {
-                    std.debug.print("{s} <- {s}:{d}\n", .{ u.service, u.file, u.line });
+                    printOut(io, "{s} <- {s}:{d}\n", .{ u.service, u.file, u.line });
                 }
                 _ = seen_svc.getOrPut(u.service) catch {};
             }
         }
-        if (flags.json) std.debug.print("]}}\n", .{});
-        if (!flags.json and seen_svc.count() == 0) std.debug.print("No external services detected.\n", .{});
+        if (flags.json) printOut(io, "]}}\n", .{});
+        if (!flags.json and seen_svc.count() == 0) printOut(io, "No external services detected.\n", .{});
         return 0;
     }
 
@@ -2089,9 +2113,9 @@ fn cmdMap(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags, po
             emitOutput(io, flags, out.items) catch return 1;
             return 0;
         }
-        std.debug.print("Defined (.env keys, values never shown): {d}\n", .{defined.items.len});
-        for (defined.items) |*k| std.debug.print("  {s} (line {d})\n", .{ k.name, k.line });
-        std.debug.print("Used in code: {d}\n", .{uses.items.len});
+        printOut(io, "Defined (.env keys, values never shown): {d}\n", .{defined.items.len});
+        for (defined.items) |*k| printOut(io, "  {s} (line {d})\n", .{ k.name, k.line });
+        printOut(io, "Used in code: {d}\n", .{uses.items.len});
         for (uses.items) |*u| {
             var isdef = false;
             for (defined.items) |*k| {
@@ -2100,7 +2124,7 @@ fn cmdMap(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags, po
                     break;
                 }
             }
-            std.debug.print("  {s} <- {s}:{d}{s}\n", .{ u.name, u.file, u.line, if (isdef) "" else " (UNDEFINED)" });
+            printOut(io, "  {s} <- {s}:{d}{s}\n", .{ u.name, u.file, u.line, if (isdef) "" else " (UNDEFINED)" });
         }
         return 0;
     }
@@ -2171,12 +2195,12 @@ fn cmdMap(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags, po
         emitOutput(io, flags, out.items) catch return 1;
         return 0;
     }
-    std.debug.print("Models (class/struct/interface):\n", .{});
+    printOut(io, "Models (class/struct/interface):\n", .{});
     for (per_file, 0..) |*l, i| {
-        for (l.items) |n| std.debug.print("  {s} ({s})\n", .{ n, snap.paths[i] });
+        for (l.items) |n| printOut(io, "  {s} ({s})\n", .{ n, snap.paths[i] });
     }
-    std.debug.print("\nRelations (LOW confidence, file-level):\n", .{});
-    for (rels.items) |*r| std.debug.print("  {s} -> {s}  ({s} -> {s})\n", .{ r.from_model, r.to_model, r.from_file, r.to_file });
+    printOut(io, "\nRelations (LOW confidence, file-level):\n", .{});
+    for (rels.items) |*r| printOut(io, "  {s} -> {s}  ({s} -> {s})\n", .{ r.from_model, r.to_model, r.from_file, r.to_file });
     return 0;
 }
 
@@ -2211,11 +2235,11 @@ fn cmdTop(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags) u8
         emitOutput(io, flags, out.items) catch return 1;
         return 0;
     }
-    std.debug.print("Refactor priority (score = cx*2 + dependents*3 + violations*15 + dead*4):\n", .{});
+    printOut(io, "Refactor priority (score = cx*2 + dependents*3 + violations*15 + dead*4):\n", .{});
     for (fixes.items[0..n], 0..) |*fx, i| {
         const det = fixDetail(gpa, &snap, fx.idx) catch "?";
         defer if (det.len > 1 or (det.len == 1 and det[0] != '?')) gpa.free(det);
-        std.debug.print("{d}. {s} — score {d} ({s})\n", .{ i + 1, snap.paths[fx.idx], fx.score, det });
+        printOut(io, "{d}. {s} — score {d} ({s})\n", .{ i + 1, snap.paths[fx.idx], fx.score, det });
     }
     // duplicate-code hint
     var dups = similarmod.findDuplicates(gpa, io, root, snap.paths, 5) catch return 0;
@@ -2224,10 +2248,10 @@ fn cmdTop(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags) u8
         dups.deinit();
     }
     if (dups.items.len > 0) {
-        std.debug.print("\nDuplicate blocks: {d} group(s) — run full detail in roadmap; top:\n", .{dups.items.len});
+        printOut(io, "\nDuplicate blocks: {d} group(s) — run full detail in roadmap; top:\n", .{dups.items.len});
         const m = @min(dups.items.len, 3);
         for (dups.items[0..m]) |*g| {
-            std.debug.print("  [{s}] {d} lines x {d} locations, e.g. {s}:{d}\n", .{ g.confidence, g.lines, g.locs.items.len, g.locs.items[0].path, g.locs.items[0].line });
+            printOut(io, "  [{s}] {d} lines x {d} locations, e.g. {s}:{d}\n", .{ g.confidence, g.lines, g.locs.items.len, g.locs.items[0].path, g.locs.items[0].line });
         }
     }
     return 0;
@@ -2260,7 +2284,7 @@ fn cmdDiff(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags, p
         changed.deinit();
     }
     if (changed.items.len == 0) {
-        if (!flags.quiet) std.debug.print("No changed files.\n", .{});
+        if (!flags.quiet) printErr(io, "No changed files.\n", .{});
         return 0;
     }
     var snap = buildSnapshot(gpa, io, root, true) catch return 1;
@@ -2271,12 +2295,12 @@ fn cmdDiff(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags, p
     defer affected.deinit();
     const level: []const u8 = if (affected.items.len >= 30) "HIGH" else if (affected.items.len >= 10) "MEDIUM" else "LOW";
     if (flags.json) {
-        std.debug.print("{{\"changed\":{d},\"matched\":{d},\"affected\":{d},\"level\":\"{s}\"}}\n", .{ changed.items.len, matched.items.len, affected.items.len, level });
+        printOut(io, "{{\"changed\":{d},\"matched\":{d},\"affected\":{d},\"level\":\"{s}\"}}\n", .{ changed.items.len, matched.items.len, affected.items.len, level });
         return 0;
     }
-    std.debug.print("Changed files: {d} (matched in index: {d})\n", .{ changed.items.len, matched.items.len });
-    for (matched.items) |m| std.debug.print("  ~ {s}\n", .{snap.paths[m]});
-    std.debug.print("Affected modules: {d}\nRisk: {s}\n", .{ affected.items.len, level });
+    printOut(io, "Changed files: {d} (matched in index: {d})\n", .{ changed.items.len, matched.items.len });
+    for (matched.items) |m| printOut(io, "  ~ {s}\n", .{snap.paths[m]});
+    printOut(io, "Affected modules: {d}\nRisk: {s}\n", .{ affected.items.len, level });
     return 0;
 }
 
@@ -2294,7 +2318,7 @@ fn cmdEvolution(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Fla
         hist.deinit();
     }
     if (hist.items.len == 0) {
-        std.debug.print("No git history found.\n", .{});
+        printOut(io, "No git history found.\n", .{});
         return 0;
     }
     // authors
@@ -2327,7 +2351,7 @@ fn cmdEvolution(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Fla
         emitOutput(io, flags, out.items) catch return 1;
         return 0;
     }
-    std.debug.print("Evolution: {d} commits, {d} authors\n\nPer-month:\n", .{ hist.items.len, authors.count() });
+    printOut(io, "Evolution: {d} commits, {d} authors\n\nPer-month:\n", .{ hist.items.len, authors.count() });
     // sorted months
     var mkeys = std.array_list.Managed([]const u8).init(gpa);
     defer mkeys.deinit();
@@ -2346,13 +2370,13 @@ fn cmdEvolution(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Fla
     for (mkeys.items) |k| {
         const v = months.get(k) orelse 0;
         const bars = v * 20 / mmax;
-        std.debug.print("  {s} {d:4} ", .{ k, v });
+        printOut(io, "  {s} {d:4} ", .{ k, v });
         var bi: usize = 0;
-        while (bi < bars) : (bi += 1) std.debug.print("#", .{});
-        std.debug.print("\n", .{});
+        while (bi < bars) : (bi += 1) printOut(io, "#", .{});
+        printOut(io, "\n", .{});
     }
     if (churn) |*ch| {
-        std.debug.print("\nTop churned files:\n", .{});
+        printOut(io, "\nTop churned files:\n", .{});
         const n = @min(ch.items.len, 10);
         for (ch.items[0..n]) |*x| {
             // first(newest)/last(oldest) seen
@@ -2366,7 +2390,7 @@ fn cmdEvolution(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Fla
                     }
                 }
             }
-            std.debug.print("  {s} — {d} commits ({s}..{s})\n", .{ x.path, x.commits, last, first });
+            printOut(io, "  {s} — {d} commits ({s}..{s})\n", .{ x.path, x.commits, last, first });
         }
     }
     return 0;
@@ -2377,13 +2401,13 @@ fn cmdCache(gpa: std.mem.Allocator, io: std.Io, flags: Flags, positional: [][]co
     const sub: []const u8 = if (positional.len > 0) positional[0] else "clean";
     if (std.mem.eql(u8, sub, "clean")) {
         store.cleanCache(io) catch {
-            std.debug.print("Cache clean failed\n", .{});
+            printErr(io, "Cache clean failed\n", .{});
             return 1;
         };
-        if (!flags.quiet) std.debug.print("Cache cleaned (.ziglens/ removed)\n", .{});
+        if (!flags.quiet) printOut(io, "Cache cleaned (.ziglens/ removed)\n", .{});
         return 0;
     }
-    std.debug.print("Usage: ziglens cache clean\n", .{});
+    printErr(io, "Usage: ziglens cache clean\n", .{});
     return 3;
 }
 
@@ -2396,16 +2420,16 @@ fn cmdPlugin(gpa: std.mem.Allocator, io: std.Io, flags: Flags, positional: [][]c
             reg.deinit();
         }
         if (flags.json) {
-            std.debug.print("{{\"plugins\":[", .{});
+            printOut(io, "{{\"plugins\":[", .{});
             for (reg.items, 0..) |p, i| {
-                if (i > 0) std.debug.print(",", .{});
-                std.debug.print("\"{s}\"", .{p});
+                if (i > 0) printOut(io, ",", .{});
+                printOut(io, "\"{s}\"", .{p});
             }
-            std.debug.print("]}}\n", .{});
+            printOut(io, "]}}\n", .{});
             return 0;
         }
         if (reg.items.len == 0) {
-            std.debug.print("No plugins installed. (local only — no registry; see docs for manifest format)\n", .{});
+            printOut(io, "No plugins installed. (local only — no registry; see docs for manifest format)\n", .{});
             return 0;
         }
         for (reg.items) |p| {
@@ -2419,15 +2443,15 @@ fn cmdPlugin(gpa: std.mem.Allocator, io: std.Io, flags: Flags, positional: [][]c
                     if (pluginmod.parseManifest(gpa, raw, p)) |m| {
                         var mm = m;
                         defer mm.deinit(gpa);
-                        std.debug.print("{s} {s} by {s} [{s}] ({s})\n", .{ mm.name, mm.version, mm.author, mm.capabilities, mm.path });
-                    } else |_| std.debug.print("{s} (manifest unreadable)\n", .{p});
-                } else |_| std.debug.print("{s} (no plugin.manifest)\n", .{p});
-            } else |_| std.debug.print("{s} (path not found)\n", .{p});
+                        printOut(io, "{s} {s} by {s} [{s}] ({s})\n", .{ mm.name, mm.version, mm.author, mm.capabilities, mm.path });
+                    } else |_| printErr(io, "{s} (manifest unreadable)\n", .{p});
+                } else |_| printOut(io, "{s} (no plugin.manifest)\n", .{p});
+            } else |_| printErr(io, "{s} (path not found)\n", .{p});
         }
         return 0;
     } else if (std.mem.eql(u8, sub, "install")) {
         if (positional.len < 2) {
-            std.debug.print("Usage: ziglens plugin install <dir>\n", .{});
+            printErr(io, "Usage: ziglens plugin install <dir>\n", .{});
             return 3;
         }
         var reg = pluginmod.loadRegistry(gpa, io) catch return 1;
@@ -2437,18 +2461,18 @@ fn cmdPlugin(gpa: std.mem.Allocator, io: std.Io, flags: Flags, positional: [][]c
         }
         for (reg.items) |p| {
             if (std.mem.eql(u8, p, positional[1])) {
-                std.debug.print("Already installed.\n", .{});
+                printOut(io, "Already installed.\n", .{});
                 return 0;
             }
         }
         reg.append(gpa.dupe(u8, positional[1]) catch return 1) catch return 1;
         // NOTE: reg owns dupes; saveRegistry borrows — then free after save
         pluginmod.saveRegistry(gpa, io, reg.items) catch return 1;
-        std.debug.print("Installed {s} (untrusted: review manifest permissions before use)\n", .{positional[1]});
+        printOut(io, "Installed {s} (untrusted: review manifest permissions before use)\n", .{positional[1]});
         return 0;
     } else if (std.mem.eql(u8, sub, "remove")) {
         if (positional.len < 2) {
-            std.debug.print("Usage: ziglens plugin remove <dir|name>\n", .{});
+            printErr(io, "Usage: ziglens plugin remove <dir|name>\n", .{});
             return 3;
         }
         var reg = pluginmod.loadRegistry(gpa, io) catch return 1;
@@ -2462,10 +2486,10 @@ fn cmdPlugin(gpa: std.mem.Allocator, io: std.Io, flags: Flags, positional: [][]c
             if (!std.mem.eql(u8, p, positional[1])) kept.append(p) catch continue;
         }
         pluginmod.saveRegistry(gpa, io, kept.items) catch return 1;
-        std.debug.print("Removed {s}\n", .{positional[1]});
+        printOut(io, "Removed {s}\n", .{positional[1]});
         return 0;
     }
-    std.debug.print("Usage: ziglens plugin <list|install|remove>\n", .{});
+    printErr(io, "Usage: ziglens plugin <list|install|remove>\n", .{});
     return 3;
 }
 
