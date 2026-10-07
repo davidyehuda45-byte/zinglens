@@ -1,5 +1,12 @@
 # ZigLens — X-ray for your codebase
 
+![Version](https://img.shields.io/badge/version-0.5.0-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+![Zig](https://img.shields.io/badge/zig-0.17.0-orange)
+<!-- Ganti USERNAME dengan akun GitHub-mu setelah push:
+![CI](https://github.com/USERNAME/ziglens/actions/workflows/ziglens.yml/badge.svg)
+-->
+
 > Scan any codebase. Understand its architecture. Find risks before changing code. All locally.
 
 **Local-first, offline-first codebase intelligence platform in Zig.** Single binary, no API key, no cloud, no AI subscription, no database server.
@@ -76,20 +83,20 @@ ziglens deps --json > deps.json
 ziglens analyze --ci   # exit 2 on quality-gate failure
 ```
 
-## Features (v0.1)
+## Features (v0.5.0)
 
-- Filesystem scanner (read-only, symlink-safe, .gitignore-aware, size-limited)
+- Filesystem scanner (read-only, symlink-safe, `.gitignore` + `.ziglensignore` aware, size-limited, generated-cache skip)
 - 16 languages: JS/TS, Python, PHP, Rust, Go, Java, C/C++, C#, Kotlin, Swift, Dart, Ruby, Elixir, Zig
 - Symbol index (function/class/interface/struct/enum) + imports/exports/calls
-- File dependency graph, cycles, fan-in/fan-out, `path A B`, `why A B`
-- Complexity (cyclomatic approx + nesting), dead-code (HIGH/MEDIUM/LOW), impact + risk (explainable)
+- File dependency graph, cycles, fan-in/fan-out, `path A B`, `why A B`, clustered `/api/v1/graph`
+- Complexity + nesting, dead-code (HIGH/MEDIUM/LOW), impact + explainable risk
+- Refactor ranking (`top`, "fix first" scoring), duplicate-block hints
+- Detection maps: REST `map api`, external services, env/config (keys only), models
+- `diff` / `analyze --staged`, `evolution` timeline, `baseline`/`compare` regression gates
 - Security scan (masked, no plaintext secrets, `ziglens-ignore` suppression)
-- Architecture layers + violations + health scores
-- CLI (EN/ID via `--lang id`), JSON/MD/HTML/CSV, localhost dashboard, `/api/v1/*`
-- `doctor`, `config`, shell completion, CI mode, quality gates
-
-Phase 2: Git history (churn/ownership), SQLite index, incremental scan, watch++,
-baseline, GitHub Actions, `.ziglens.toml`. Phase 3: plugins, drift, PR analysis.
+- Architecture layers + custom `[[rules]]` + health scores
+- CLI (EN/ID via `--lang id`), JSON/MD/HTML/CSV, localhost dashboard + treemap, `/api/v1/*`
+- `doctor`, `config`, shell completion, CI mode, quality gates, local plugins
 
 ## Privacy
 
