@@ -3,9 +3,7 @@
 ![Version](https://img.shields.io/badge/version-0.6.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Zig](https://img.shields.io/badge/zig-0.17.0-orange)
-<!-- After pushing to GitHub, replace USERNAME:
-![CI](https://github.com/USERNAME/ziglens/actions/workflows/ziglens.yml/badge.svg)
--->
+![CI](https://github.com/davidyehuda45-byte/zinglens/actions/workflows/ziglens.yml/badge.svg)
 
 **English** | [Indonesia](./README.id.md)
 
