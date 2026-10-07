@@ -1,6 +1,6 @@
 # ZigLens — X-ray for your codebase
 
-![Version](https://img.shields.io/badge/version-0.6.0-blue)
+![Version](https://img.shields.io/badge/version-0.7.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Zig](https://img.shields.io/badge/zig-0.17.0-orange)
 ![CI](https://github.com/davidyehuda45-byte/zinglens/actions/workflows/ziglens.yml/badge.svg)

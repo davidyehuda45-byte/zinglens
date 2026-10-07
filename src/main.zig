@@ -20,7 +20,7 @@ const pluginmod = @import("plugin.zig");
 const detectmod = @import("detect.zig");
 const similarmod = @import("similar.zig");
 
-const VERSION = "0.6.0";
+const VERSION = "0.7.0";
 
 const Cmd = enum {
     scan, analyze, search, symbol, refs, deps, graph, impact, deadcode,

@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.7.0 — Dashboard console revamp
+
+- Interactive SVG dependency graph: layered layout, pan/zoom, node detail
+  (depends-on/needed-by), group + text filters, fullscreen, table alternative
+- Health bars, recommendations list, breadcrumbs, density toggle, empty states,
+  severity dots + text labels, visible focus, responsive nav
+- JS syntax-checked with node --check in CI-style local gate
+
 ## v0.6.0 — Real dashboard pages
 
 - Fixed project-JSON tail bug; added `top_complexity`, `recommendations`,
