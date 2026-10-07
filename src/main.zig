@@ -1,4 +1,4 @@
-// ZigLens — Local Codebase Intelligence & Architecture Analysis Platform.
+// ZigLens -- Local Codebase Intelligence & Architecture Analysis Platform.
 // v0.1: Zig CLI + scanner + 16-language heuristic parser + symbol index +
 // dependency graph + deadcode + complexity + impact + security + dashboard.
 // Spec: local-first, offline, read-only, single binary, JSON API, localhost only.
@@ -290,7 +290,7 @@ fn findFileIdx(snap: *Snapshot, query: []const u8) ?usize {
 
 fn printHelp(io: std.Io) void {
     printOut(io,
-        \\ZigLens v{s} — X-ray for your codebase (local-first, offline).
+        \\ZigLens v{s} -- X-ray for your codebase (local-first, offline).
         \\
         \\Usage: ziglens [command] [args] [flags]
         \\
@@ -805,7 +805,7 @@ fn cmdAnalyze(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags
             if (fx.score == 0) break;
             const det = fixDetail(gpa, &snap, fx.idx) catch "?";
             defer if (!std.mem.eql(u8, det, "?")) gpa.free(det);
-            printOut(io, "{d}. {s} — score {d} ({s})\n", .{ i + 1, snap.paths[fx.idx], fx.score, det });
+            printOut(io, "{d}. {s} -- score {d} ({s})\n", .{ i + 1, snap.paths[fx.idx], fx.score, det });
         }
     } else |_| {}
 
@@ -1087,7 +1087,7 @@ fn cmdDeadcode(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flag
         return 0;
     }
     for (snap.dead.items) |*d| {
-        printOut(io, "[{s}] {s} :: {s} ({s}) — {s}\n", .{ analysis.confidenceName(d.confidence), d.file, d.name, d.kind, d.reason });
+        printOut(io, "[{s}] {s} :: {s} ({s}) -- {s}\n", .{ analysis.confidenceName(d.confidence), d.file, d.name, d.kind, d.reason });
     }
     return 0;
 }
@@ -1339,7 +1339,7 @@ fn cmdGit(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags, po
     printOut(io, "Branch: {s} | Commits: {d} | Contributors: {d}\nHotspots (by dependents):\n", .{ branch, commits, contributors });
     const n = @min(order.items.len, 10);
     for (order.items[0..n]) |idx| {
-        printOut(io, "  {s} — {d} dependents\n", .{ snap.paths[idx], snap.graph.rev.items[idx].items.len });
+        printOut(io, "  {s} -- {d} dependents\n", .{ snap.paths[idx], snap.graph.rev.items[idx].items.len });
     }
     // git log churn (needs git binary + repo; silent fallback)
     if (gitmod.getLog(gpa, io, root, 200)) |logcommits| {
@@ -1358,7 +1358,7 @@ fn cmdGit(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags, po
                 printOut(io, "\nChurn (top changed files, {d} commits scanned):\n", .{lc.items.len});
                 const cn = @min(ch.items.len, 10);
                 for (ch.items[0..cn]) |*x| {
-                    printOut(io, "  {s} — {d} commits, {d} authors\n", .{ x.path, x.commits, x.authors });
+                    printOut(io, "  {s} -- {d} commits, {d} authors\n", .{ x.path, x.commits, x.authors });
                 }
             }
         }
@@ -1387,11 +1387,11 @@ fn cmdReport(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags,
         var out = std.array_list.Managed(u8).init(gpa);
         defer out.deinit();
         var b: [256]u8 = undefined;
-        const head = std.fmt.bufPrint(&b, "# ZigLens Report — {s}\n\nHealth: {d}/100 (arch {d}, maint {d})\n\nFiles: {d}, Symbols: {d}, Deps: {d}, Cycles: {d}\n\n## Top complexity\n", .{ root, h.overall, h.arch, h.maint, snap.paths.len, snap.total_symbols, snap.graph.edges.items.len, snap.cycles.items.len }) catch return 1;
+        const head = std.fmt.bufPrint(&b, "# ZigLens Report -- {s}\n\nHealth: {d}/100 (arch {d}, maint {d})\n\nFiles: {d}, Symbols: {d}, Deps: {d}, Cycles: {d}\n\n## Top complexity\n", .{ root, h.overall, h.arch, h.maint, snap.paths.len, snap.total_symbols, snap.graph.edges.items.len, snap.cycles.items.len }) catch return 1;
         out.appendSlice(head) catch return 1;
         const n = @min(snap.complexity.items.len, 20);
         for (snap.complexity.items[0..n]) |*c| {
-            const line = std.fmt.bufPrint(&b, "- {s} — complexity {d}, loc {d}\n", .{ c.path, c.complexity, c.loc }) catch return 1;
+            const line = std.fmt.bufPrint(&b, "- {s} -- complexity {d}, loc {d}\n", .{ c.path, c.complexity, c.loc }) catch return 1;
             out.appendSlice(line) catch return 1;
         }
         emitOutput(io, flags, out.items) catch return 1;
@@ -1401,7 +1401,7 @@ fn cmdReport(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags,
         defer out.deinit();
         out.appendSlice("<!DOCTYPE html><html><head><meta charset=utf-8><title>ZigLens Report</title><style>body{font-family:monospace;background:#0d1117;color:#e6edf3;padding:24px}table{border-collapse:collapse}td,th{border:1px solid #21262d;padding:4px 8px}</style></head><body>") catch return 1;
         var b: [256]u8 = undefined;
-        const head = std.fmt.bufPrint(&b, "<h1>ZigLens Report — {s}</h1><p>Health {d}/100 · Files {d} · Symbols {d}</p><table><tr><th>file</th><th>complexity</th></tr>", .{ root, h.overall, snap.paths.len, snap.total_symbols }) catch return 1;
+        const head = std.fmt.bufPrint(&b, "<h1>ZigLens Report -- {s}</h1><p>Health {d}/100 · Files {d} · Symbols {d}</p><table><tr><th>file</th><th>complexity</th></tr>", .{ root, h.overall, snap.paths.len, snap.total_symbols }) catch return 1;
         out.appendSlice(head) catch return 1;
         const n = @min(snap.complexity.items.len, 50);
         for (snap.complexity.items[0..n]) |*c| {
@@ -1434,17 +1434,17 @@ fn cmdReportTemplate(gpa: std.mem.Allocator, io: std.Io, snap: *Snapshot, root: 
     defer out.deinit();
     var b: [256]u8 = undefined;
     if (std.mem.eql(u8, flags.template, "executive")) {
-        const s = std.fmt.bufPrint(&b, "# Executive Summary — {s}\n\nProject Health: {d}\n\nMajor risks: {d}\nArchitecture issues: {d}\nTechnical debt: {s}\n", .{ root, h.overall, snap.cycles.items.len, snap.arch.items.len, if (h.maint < 60) "High" else if (h.maint < 80) "Medium" else "Low" }) catch return 1;
+        const s = std.fmt.bufPrint(&b, "# Executive Summary -- {s}\n\nProject Health: {d}\n\nMajor risks: {d}\nArchitecture issues: {d}\nTechnical debt: {s}\n", .{ root, h.overall, snap.cycles.items.len, snap.arch.items.len, if (h.maint < 60) "High" else if (h.maint < 80) "Medium" else "Low" }) catch return 1;
         out.appendSlice(s) catch return 1;
     } else if (std.mem.eql(u8, flags.template, "architecture")) {
-        const s = std.fmt.bufPrint(&b, "# Architecture Report — {s}\n\nScore: {d}/100\nCycles: {d}\nViolations: {d}\n\n", .{ root, h.arch, snap.cycles.items.len, snap.arch.items.len }) catch return 1;
+        const s = std.fmt.bufPrint(&b, "# Architecture Report -- {s}\n\nScore: {d}/100\nCycles: {d}\nViolations: {d}\n\n", .{ root, h.arch, snap.cycles.items.len, snap.arch.items.len }) catch return 1;
         out.appendSlice(s) catch return 1;
         for (snap.arch.items) |*v| {
             const l = std.fmt.bufPrint(&b, "- [{s}] {s}\n", .{ v.id, v.message }) catch break;
             out.appendSlice(l) catch return 1;
         }
     } else if (std.mem.eql(u8, flags.template, "technical-debt")) {
-        const s = std.fmt.bufPrint(&b, "# Technical Debt — {s}\n\nDead code: {d}\nHigh-complexity files: ", .{ root, snap.dead.items.len }) catch return 1;
+        const s = std.fmt.bufPrint(&b, "# Technical Debt -- {s}\n\nDead code: {d}\nHigh-complexity files: ", .{ root, snap.dead.items.len }) catch return 1;
         out.appendSlice(s) catch return 1;
         var hc: usize = 0;
         for (snap.complexity.items) |*c| {
@@ -1974,7 +1974,7 @@ fn buildReportBody(gpa: std.mem.Allocator, snap: *Snapshot, root: []const u8, fm
     var b: [256]u8 = undefined;
     if (std.mem.eql(u8, fmt, "html")) {
         try out.appendSlice("<!DOCTYPE html><html><head><meta charset=utf-8><title>ZigLens Report</title></head><body>");
-        const head = try std.fmt.bufPrint(&b, "<h1>ZigLens Report — {s}</h1><p>Files {d} · Symbols {d}</p>", .{ root, snap.paths.len, snap.total_symbols });
+        const head = try std.fmt.bufPrint(&b, "<h1>ZigLens Report -- {s}</h1><p>Files {d} · Symbols {d}</p>", .{ root, snap.paths.len, snap.total_symbols });
         try out.appendSlice(head);
         try out.appendSlice("</body></html>");
         return .{ .body = try out.toOwnedSlice(), .ctype = "text/html; charset=utf-8" };
@@ -1988,7 +1988,7 @@ fn buildReportBody(gpa: std.mem.Allocator, snap: *Snapshot, root: []const u8, fm
         return .{ .body = try out.toOwnedSlice(), .ctype = "text/csv; charset=utf-8" };
     }
     // default md
-    const head = try std.fmt.bufPrint(&b, "# ZigLens Report — {s}\n\nFiles: {d}, Symbols: {d}, Deps: {d}\n", .{ root, snap.paths.len, snap.total_symbols, snap.graph.edges.items.len });
+    const head = try std.fmt.bufPrint(&b, "# ZigLens Report -- {s}\n\nFiles: {d}, Symbols: {d}, Deps: {d}\n", .{ root, snap.paths.len, snap.total_symbols, snap.graph.edges.items.len });
     try out.appendSlice(head);
     return .{ .body = try out.toOwnedSlice(), .ctype = "text/markdown; charset=utf-8" };
 }
@@ -2660,7 +2660,7 @@ fn cmdTop(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags) u8
     for (fixes.items[0..n], 0..) |*fx, i| {
         const det = fixDetail(gpa, &snap, fx.idx) catch "?";
         defer if (det.len > 1 or (det.len == 1 and det[0] != '?')) gpa.free(det);
-        printOut(io, "{d}. {s} — score {d} ({s})\n", .{ i + 1, snap.paths[fx.idx], fx.score, det });
+        printOut(io, "{d}. {s} -- score {d} ({s})\n", .{ i + 1, snap.paths[fx.idx], fx.score, det });
     }
     // duplicate-code hint
     var dups = similarmod.findDuplicates(gpa, io, root, snap.paths, 5) catch return 0;
@@ -2669,7 +2669,7 @@ fn cmdTop(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags) u8
         dups.deinit();
     }
     if (dups.items.len > 0) {
-        printOut(io, "\nDuplicate blocks: {d} group(s) — run full detail in roadmap; top:\n", .{dups.items.len});
+        printOut(io, "\nDuplicate blocks: {d} group(s) -- run full detail in roadmap; top:\n", .{dups.items.len});
         const m = @min(dups.items.len, 3);
         for (dups.items[0..m]) |*g| {
             printOut(io, "  [{s}] {d} lines x {d} locations, e.g. {s}:{d}\n", .{ g.confidence, g.lines, g.locs.items.len, g.locs.items[0].path, g.locs.items[0].line });
@@ -2811,7 +2811,7 @@ fn cmdEvolution(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Fla
                     }
                 }
             }
-            printOut(io, "  {s} — {d} commits ({s}..{s})\n", .{ x.path, x.commits, last, first });
+            printOut(io, "  {s} -- {d} commits ({s}..{s})\n", .{ x.path, x.commits, last, first });
         }
     }
     return 0;
@@ -2850,7 +2850,7 @@ fn cmdPlugin(gpa: std.mem.Allocator, io: std.Io, flags: Flags, positional: [][]c
             return 0;
         }
         if (reg.items.len == 0) {
-            printOut(io, "No plugins installed. (local only — no registry; see docs for manifest format)\n", .{});
+            printOut(io, "No plugins installed. (local only -- no registry; see docs for manifest format)\n", .{});
             return 0;
         }
         for (reg.items) |p| {
@@ -2887,7 +2887,7 @@ fn cmdPlugin(gpa: std.mem.Allocator, io: std.Io, flags: Flags, positional: [][]c
             }
         }
         reg.append(gpa.dupe(u8, positional[1]) catch return 1) catch return 1;
-        // NOTE: reg owns dupes; saveRegistry borrows — then free after save
+        // NOTE: reg owns dupes; saveRegistry borrows -- then free after save
         pluginmod.saveRegistry(gpa, io, reg.items) catch return 1;
         printOut(io, "Installed {s} (untrusted: review manifest permissions before use)\n", .{positional[1]});
         return 0;
