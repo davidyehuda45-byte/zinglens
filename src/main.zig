@@ -786,27 +786,13 @@ fn cmdAnalyze(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags
     printOut(io, "\nDEAD CODE             {d}\n", .{snap.dead.items.len});
     printOut(io, "ARCH VIOLATIONS         {d}\n", .{snap.arch.items.len});
     printOut(io, "CYCLES                  {d}\n", .{snap.cycles.items.len});
-    // top risk
-    printOut(io, "\nTOP RISK\n", .{});
-    const n = @min(snap.complexity.items.len, 5);
-    for (snap.complexity.items[0..n], 0..) |c, i| {
-        printOut(io, "{d}. {s} (complexity {d})\n", .{ i + 1, c.path, c.complexity });
-    }
-    printOut(io, "\nWhat should I fix first? (score = cx*2 + dependents*3 + violations*15 + dead*4)\n", .{});
+    // top risk: single plain-language fix list (no raw formulas, no duplicates)
     if (scoredFixes(gpa, &snap)) |fixes| {
         defer {
             var mf = fixes;
             mf.deinit();
         }
-        const m = @min(fixes.items.len, 5);
-        var i: usize = 0;
-        while (i < m) : (i += 1) {
-            const fx = fixes.items[i];
-            if (fx.score == 0) break;
-            const det = fixDetail(gpa, &snap, fx.idx) catch "?";
-            defer if (!std.mem.eql(u8, det, "?")) gpa.free(det);
-            printOut(io, "{d}. {s} -- score {d} ({s})\n", .{ i + 1, snap.paths[fx.idx], fx.score, det });
-        }
+        renderFixes(gpa, io, &snap, fixes.items, 5, i18n.msg(flags.lang));
     } else |_| {}
 
     if (flags.ci and (snap.cycles.items.len > 0 or snap.arch.items.len > 0)) {
@@ -1117,8 +1103,9 @@ fn cmdComplexity(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Fl
         return 0;
     }
     printOut(io, "Top {d} complexity:\n", .{n});
+    const ml = i18n.msg(flags.lang);
     for (snap.complexity.items[0..n]) |*c| {
-        printOut(io, "  {d}\t{s} (loc {d}, nesting {d})\n", .{ c.complexity, c.path, c.loc, c.nesting });
+        printOut(io, "  [{s}] {d}\t{s} (loc {d})\n", .{ cxLevel(ml, c.complexity), c.complexity, c.path, c.loc });
     }
     return 0;
 }
@@ -2320,6 +2307,68 @@ fn scoredFixes(gpa: std.mem.Allocator, snap: *Snapshot) !std.array_list.Managed(
     return analysis.fixScores(gpa, cx, fanin, viol, deadc);
 }
 
+fn cxLevel(m: i18n.Msg, c: u32) []const u8 {
+    if (c >= 50) return m.lvl_very_high;
+    if (c >= 20) return m.lvl_high;
+    if (c >= 10) return m.lvl_moderate;
+    return m.lvl_low;
+}
+
+fn appendWhy(gpa: std.mem.Allocator, why: *std.array_list.Managed(u8), pattern: []const u8, value: usize, first: *bool) void {
+    if (!first.*) why.appendSlice("; ") catch return;
+    first.* = false;
+    // patterns contain one {d}
+    var buf: [160]u8 = undefined;
+    var out_i: usize = 0;
+    var i: usize = 0;
+    while (i < pattern.len and out_i + 20 < buf.len) {
+        if (pattern[i] == '{' and i + 2 < pattern.len and pattern[i + 1] == 'd' and pattern[i + 2] == '}') {
+            const num = std.fmt.bufPrint(buf[out_i..], "{d}", .{value}) catch break;
+            out_i += num.len;
+            i += 3;
+        } else {
+            buf[out_i] = pattern[i];
+            out_i += 1;
+            i += 1;
+        }
+    }
+    why.appendSlice(buf[0..out_i]) catch {};
+    _ = gpa;
+}
+
+// Plain-language fix list: why it matters + what to do. No raw formulas.
+fn renderFixes(gpa: std.mem.Allocator, io: std.Io, snap: *Snapshot, fixes: []const analysis.FixItem, n: usize, m: i18n.Msg) void {
+    printOut(io, "\n{s}\n", .{m.fix_title});
+    const count = @min(n, fixes.len);
+    var i: usize = 0;
+    while (i < count) : (i += 1) {
+        const fx = fixes[i];
+        if (fx.score == 0) break;
+        const path = snap.paths[fx.idx];
+        var c: u32 = 1;
+        if (snap.res.files.items[fx.idx].facts) |*f| c = f.complexity;
+        const deps = snap.graph.rev.items[fx.idx].items.len;
+        var v: usize = 0;
+        for (snap.arch.items) |*a| {
+            if (std.mem.indexOf(u8, a.message, path) != null) v += 1;
+        }
+        var d: usize = 0;
+        for (snap.dead.items) |*x| {
+            if (std.mem.eql(u8, x.file, path)) d += 1;
+        }
+        var why = std.array_list.Managed(u8).init(gpa);
+        defer why.deinit();
+        var first = true;
+        if (c >= 50) appendWhy(gpa, &why, m.wx_complex, c, &first) else if (c >= 20) appendWhy(gpa, &why, m.wx_fairly, c, &first) else if (c >= 10) appendWhy(gpa, &why, m.wx_growing, c, &first);
+        if (deps > 0) appendWhy(gpa, &why, m.wx_deps, deps, &first);
+        if (v > 0) appendWhy(gpa, &why, m.wx_viol, v, &first);
+        if (d > 0) appendWhy(gpa, &why, m.wx_dead, d, &first);
+        if (first) why.appendSlice(m.wx_small) catch {};
+        const action: []const u8 = if (v > 0) m.do_layer else if (d > 0) m.do_delete else if (deps >= 5) m.do_careful else if (c >= 20) m.do_split else m.do_review;
+        printOut(io, "{d}. {s} [{s}]\n   {s}: {s}\n   {s}: {s}\n", .{ i + 1, path, cxLevel(m, c), m.why_label, why.items, m.do_label, action });
+    }
+}
+
 fn fixDetail(gpa: std.mem.Allocator, snap: *Snapshot, idx: usize) ![]u8 {
     var c: u32 = 1;
     if (snap.res.files.items[idx].facts) |*f| c = f.complexity;
@@ -2656,12 +2705,7 @@ fn cmdTop(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags) u8
         emitOutput(io, flags, out.items) catch return 1;
         return 0;
     }
-    printOut(io, "Refactor priority (score = cx*2 + dependents*3 + violations*15 + dead*4):\n", .{});
-    for (fixes.items[0..n], 0..) |*fx, i| {
-        const det = fixDetail(gpa, &snap, fx.idx) catch "?";
-        defer if (det.len > 1 or (det.len == 1 and det[0] != '?')) gpa.free(det);
-        printOut(io, "{d}. {s} -- score {d} ({s})\n", .{ i + 1, snap.paths[fx.idx], fx.score, det });
-    }
+    renderFixes(gpa, io, &snap, fixes.items, n, i18n.msg(flags.lang));
     // duplicate-code hint
     var dups = similarmod.findDuplicates(gpa, io, root, snap.paths, 5) catch return 0;
     defer {
