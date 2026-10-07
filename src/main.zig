@@ -20,7 +20,7 @@ const pluginmod = @import("plugin.zig");
 const detectmod = @import("detect.zig");
 const similarmod = @import("similar.zig");
 
-const VERSION = "0.5.1";
+const VERSION = "0.6.0";
 
 const Cmd = enum {
     scan, analyze, search, symbol, refs, deps, graph, impact, deadcode,
@@ -355,7 +355,7 @@ fn writeOutputFile(io: std.Io, path: []const u8, content: []const u8) !void {
 }
 
 // ---------- JSON builders (manual, stable) ----------
-fn buildProjectJson(gpa: std.mem.Allocator, snap: *Snapshot, root: []const u8) ![]u8 {
+fn buildProjectJson(gpa: std.mem.Allocator, io: std.Io, snap: *Snapshot, root: []const u8) ![]u8 {
     var out = std.array_list.Managed(u8).init(gpa);
     errdefer out.deinit();
     const h = healthScores(snap);
@@ -403,11 +403,68 @@ fn buildProjectJson(gpa: std.mem.Allocator, snap: *Snapshot, root: []const u8) !
         }
         try out.append(']');
     }
-    const fb = try std.fmt.bufPrint(&buf, "],\"symbols\":{d},\"deadcode_count\":{d}}},\"symbols\":{d}}}", .{ snap.total_symbols, snap.dead.items.len, snap.total_symbols });
-    // fix: close properly — rebuild tail correctly
-    _ = fb;
-    try out.appendSlice("]}");
+    // top complexity (dashboard Overview needs real rows, not empty tables)
+    try out.appendSlice("],\"top_complexity\":[");
+    const tcn = @min(snap.complexity.items.len, 10);
+    for (snap.complexity.items[0..tcn], 0..) |*c, i| {
+        if (i > 0) try out.append(',');
+        const pq = try report_util.jsonString(gpa, c.path);
+        defer gpa.free(pq);
+        try out.appendSlice("{\"path\":");
+        try out.appendSlice(pq);
+        var b2: [64]u8 = undefined;
+        const s2 = try std.fmt.bufPrint(&b2, ",\"complexity\":{d},\"loc\":{d}}}", .{ c.complexity, c.loc });
+        try out.appendSlice(s2);
+    }
+    // recommendations (shared scorer with `top` / analyze)
+    try out.appendSlice("],\"recommendations\":[");
+    if (scoredFixes(gpa, snap)) |fixes| {
+        defer {
+            var mf = fixes;
+            mf.deinit();
+        }
+        const rn = @min(fixes.items.len, 5);
+        for (fixes.items[0..rn], 0..) |*fx, i| {
+            if (fx.score == 0) break;
+            if (i > 0) try out.append(',');
+            const det = fixDetail(gpa, snap, fx.idx) catch "?";
+            const owned_det = det.len > 1 or (det.len == 1 and det[0] != '?');
+            defer if (owned_det) gpa.free(det);
+            var tmp: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&tmp, "{s} ({s})", .{ snap.paths[fx.idx], det }) catch continue;
+            const mq = try report_util.jsonString(gpa, msg);
+            defer gpa.free(mq);
+            try out.appendSlice(mq);
+        }
+    } else |_| {}
+    // security count (capped sample; values never stored, only counted)
+    const sec = countSecurity(gpa, io, snap, root);
+    var b3: [128]u8 = undefined;
+    const tail = try std.fmt.bufPrint(&b3, "],\"symbols\":{d},\"deadcode_count\":{d},\"security_count\":{d},\"security_truncated\":{s}}}", .{ snap.total_symbols, snap.dead.items.len, sec.count, if (sec.truncated) "true" else "false" });
+    try out.appendSlice(tail);
     return out.toOwnedSlice();
+}
+
+// Capped security count for dashboards/JSON (masked evidence freed immediately).
+fn countSecurity(gpa: std.mem.Allocator, io: std.Io, snap: *Snapshot, root: []const u8) struct { count: usize, truncated: bool } {
+    const cwd = std.Io.Dir.cwd();
+    var dir = std.Io.Dir.openDir(cwd, io, root, .{ .iterate = true }) catch return .{ .count = 0, .truncated = true };
+    defer dir.close(io);
+    var count: usize = 0;
+    var scanned: usize = 0;
+    for (snap.paths) |p| {
+        if (scanned >= 150) return .{ .count = count, .truncated = true };
+        const content = dir.readFileAlloc(io, p, gpa, .limited(1024 * 1024)) catch continue;
+        defer gpa.free(content);
+        scanned += 1;
+        var found = analysis.scanSecurity(gpa, p, content) catch continue;
+        defer {
+            for (found.items) |*f| gpa.free(f.masked);
+            found.deinit();
+        }
+        count += found.items.len;
+    }
+    return .{ .count = count, .truncated = false };
 }
 
 pub fn main(init: std.process.Init) !u8 {
@@ -628,7 +685,7 @@ fn cmdScan(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags) u
     const h = healthScores(&snap);
 
     if (flags.json) {
-        const js = buildProjectJson(gpa, &snap, root) catch {
+        const js = buildProjectJson(gpa, io, &snap, root) catch {
             printErr(io, "{{\"error\":\"json-build-failed\"}}\n", .{});
             return 1;
         };
@@ -708,7 +765,7 @@ fn cmdAnalyze(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags
     }
 
     if (flags.json) {
-        const js = buildProjectJson(gpa, &snap, root) catch return 1;
+        const js = buildProjectJson(gpa, io, &snap, root) catch return 1;
         defer gpa.free(js);
         emitOutput(io, flags, js) catch return 1;
         if (flags.ci) {
@@ -866,7 +923,7 @@ fn cmdDeps(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags, p
     if (positional.len == 0) {
         // dump all deps summary
         if (flags.json) {
-            const js = buildProjectJson(gpa, &snap, root) catch return 1;
+            const js = buildProjectJson(gpa, io, &snap, root) catch return 1;
             defer gpa.free(js);
             emitOutput(io, flags, js) catch return 1;
             return 0;
@@ -1318,7 +1375,7 @@ fn cmdReport(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags,
     const fmt = flags.format;
 
     if (std.mem.eql(u8, fmt, "json") or flags.json) {
-        const js = buildProjectJson(gpa, &snap, root) catch return 1;
+        const js = buildProjectJson(gpa, io, &snap, root) catch return 1;
         defer gpa.free(js);
         emitOutput(io, flags, js) catch return 1;
         return 0;
@@ -1417,7 +1474,7 @@ fn cmdReportTemplate(gpa: std.mem.Allocator, io: std.Io, snap: *Snapshot, root: 
 fn cmdServe(gpa: std.mem.Allocator, io: std.Io, root: []const u8, flags: Flags) u8 {
     var snap = buildSnapshot(gpa, io, root, flags.quiet) catch return 1;
     defer snap.deinit();
-    const js = buildProjectJson(gpa, &snap, root) catch return 1;
+    const js = buildProjectJson(gpa, io, &snap, root) catch return 1;
     defer gpa.free(js);
 
     // localhost only (Spec Sec.28). Refuse --host != localhost.
@@ -1614,6 +1671,328 @@ fn buildTreemapJson(gpa: std.mem.Allocator, snap: *Snapshot) ![]u8 {
     return out.toOwnedSlice();
 }
 
+fn queryParam(target: []const u8, key: []const u8) ?[]const u8 {
+    const qi = std.mem.indexOfScalar(u8, target, '?') orelse return null;
+    const qs = target[qi + 1 ..];
+    var pairs = std.mem.splitSequence(u8, qs, "&");
+    while (pairs.next()) |pr| {
+        if (pr.len <= key.len) continue;
+        if (std.mem.startsWith(u8, pr, key) and pr[key.len] == '=') return pr[key.len + 1 ..];
+    }
+    return null;
+}
+
+fn pctDecode(gpa: std.mem.Allocator, s: []const u8) ![]u8 {
+    var out = std.array_list.Managed(u8).init(gpa);
+    errdefer out.deinit();
+    var i: usize = 0;
+    while (i < s.len) {
+        if (s[i] == '%' and i + 2 < s.len) {
+            const hex = s[i + 1 .. i + 3];
+            const v = std.fmt.parseInt(u8, hex, 16) catch {
+                try out.append(s[i]);
+                i += 1;
+                continue;
+            };
+            try out.append(v);
+            i += 3;
+        } else if (s[i] == '+') {
+            try out.append(' ');
+            i += 1;
+        } else {
+            try out.append(s[i]);
+            i += 1;
+        }
+    }
+    return out.toOwnedSlice();
+}
+
+fn buildSymbolsJson(gpa: std.mem.Allocator, snap: *Snapshot) ![]u8 {
+    var out = std.array_list.Managed(u8).init(gpa);
+    errdefer out.deinit();
+    try out.appendSlice("{\"symbols\":[");
+    var n: usize = 0;
+    for (snap.res.files.items) |*f| {
+        if (f.facts) |*facts| {
+            for (facts.symbols.items) |*s| {
+                if (n > 0) try out.append(',');
+                const nq = try report_util.jsonString(gpa, s.name);
+                defer gpa.free(nq);
+                const fq = try report_util.jsonString(gpa, f.path);
+                defer gpa.free(fq);
+                try out.appendSlice("{\"name\":");
+                try out.appendSlice(nq);
+                try out.appendSlice(",\"kind\":\"");
+                try out.appendSlice(s.kind.name());
+                try out.appendSlice("\",\"file\":");
+                try out.appendSlice(fq);
+                var b: [32]u8 = undefined;
+                const ln = try std.fmt.bufPrint(&b, ",\"line\":{d}}}", .{s.line});
+                try out.appendSlice(ln);
+                n += 1;
+                if (n >= 500) break;
+            }
+        }
+        if (n >= 500) break;
+    }
+    try out.appendSlice("]}");
+    return out.toOwnedSlice();
+}
+
+fn buildDeadcodeJson(gpa: std.mem.Allocator, snap: *Snapshot) ![]u8 {
+    var out = std.array_list.Managed(u8).init(gpa);
+    errdefer out.deinit();
+    try out.appendSlice("{\"deadcode\":[");
+    for (snap.dead.items, 0..) |*d, i| {
+        if (i > 0) try out.append(',');
+        const fq = try report_util.jsonString(gpa, d.file);
+        defer gpa.free(fq);
+        const nq = try report_util.jsonString(gpa, d.name);
+        defer gpa.free(nq);
+        const rq = try report_util.jsonString(gpa, d.reason);
+        defer gpa.free(rq);
+        try out.appendSlice("{\"file\":");
+        try out.appendSlice(fq);
+        try out.appendSlice(",\"name\":");
+        try out.appendSlice(nq);
+        var b: [128]u8 = undefined;
+        const mid = try std.fmt.bufPrint(&b, ",\"kind\":\"{s}\",\"confidence\":\"{s}\",\"reason\":", .{ d.kind, analysis.confidenceName(d.confidence) });
+        try out.appendSlice(mid);
+        try out.appendSlice(rq);
+        try out.append('}');
+    }
+    try out.appendSlice("]}");
+    return out.toOwnedSlice();
+}
+
+fn buildComplexityJson(gpa: std.mem.Allocator, snap: *Snapshot) ![]u8 {
+    var out = std.array_list.Managed(u8).init(gpa);
+    errdefer out.deinit();
+    try out.appendSlice("{\"ranking\":[");
+    const n = @min(snap.complexity.items.len, 100);
+    for (snap.complexity.items[0..n], 0..) |*c, i| {
+        if (i > 0) try out.append(',');
+        const pq = try report_util.jsonString(gpa, c.path);
+        defer gpa.free(pq);
+        try out.appendSlice("{\"path\":");
+        try out.appendSlice(pq);
+        var b: [64]u8 = undefined;
+        const s = try std.fmt.bufPrint(&b, ",\"complexity\":{d},\"loc\":{d},\"nesting\":{d}}}", .{ c.complexity, c.loc, c.nesting });
+        try out.appendSlice(s);
+    }
+    try out.appendSlice("]}");
+    return out.toOwnedSlice();
+}
+
+fn buildArchitectureJson(gpa: std.mem.Allocator, snap: *Snapshot) ![]u8 {
+    var out = std.array_list.Managed(u8).init(gpa);
+    errdefer out.deinit();
+    try out.appendSlice("{\"cycles\":[");
+    for (snap.cycles.items, 0..) |*c, i| {
+        if (i > 0) try out.append(',');
+        try out.appendSlice("{\"path\":[");
+        for (c.items, 0..) |node, j| {
+            if (j > 0) try out.append(',');
+            const pq = try report_util.jsonString(gpa, snap.paths[node]);
+            defer gpa.free(pq);
+            try out.appendSlice(pq);
+        }
+        try out.appendSlice("]}");
+    }
+    try out.appendSlice("],\"violations\":[");
+    for (snap.arch.items, 0..) |*v, i| {
+        if (i > 0) try out.append(',');
+        const iq = try report_util.jsonString(gpa, v.id);
+        defer gpa.free(iq);
+        const mq = try report_util.jsonString(gpa, v.message);
+        defer gpa.free(mq);
+        try out.appendSlice("{\"id\":");
+        try out.appendSlice(iq);
+        var b: [32]u8 = undefined;
+        const sev = try std.fmt.bufPrint(&b, ",\"severity\":\"{s}\",\"message\":", .{analysis.severityName(v.severity)});
+        try out.appendSlice(sev);
+        try out.appendSlice(mq);
+        try out.append('}');
+    }
+    try out.appendSlice("]}");
+    return out.toOwnedSlice();
+}
+
+fn buildSecurityJson(gpa: std.mem.Allocator, io: std.Io, snap: *Snapshot, root: []const u8) ![]u8 {
+    var out = std.array_list.Managed(u8).init(gpa);
+    errdefer out.deinit();
+    try out.appendSlice("{\"findings\":[");
+    const cwd = std.Io.Dir.cwd();
+    var dir = std.Io.Dir.openDir(cwd, io, root, .{ .iterate = true }) catch {
+        try out.appendSlice("]}");
+        return out.toOwnedSlice();
+    };
+    defer dir.close(io);
+    var n: usize = 0;
+    var scanned: usize = 0;
+    for (snap.paths) |p| {
+        if (scanned >= 100) break;
+        const content = dir.readFileAlloc(io, p, gpa, .limited(1024 * 1024)) catch continue;
+        defer gpa.free(content);
+        scanned += 1;
+        var found = analysis.scanSecurity(gpa, p, content) catch continue;
+        defer {
+            for (found.items) |*f| gpa.free(f.masked);
+            found.deinit();
+        }
+        for (found.items) |*fd| {
+            if (n > 0) try out.append(',');
+            const fq = try report_util.jsonString(gpa, fd.file);
+            defer gpa.free(fq);
+            const mq = try report_util.jsonString(gpa, fd.masked);
+            defer gpa.free(mq);
+            const iq = try report_util.jsonString(gpa, fd.id);
+            defer gpa.free(iq);
+            try out.appendSlice("{\"id\":");
+            try out.appendSlice(iq);
+            try out.appendSlice(",\"file\":");
+            try out.appendSlice(fq);
+            var b: [128]u8 = undefined;
+            const mid = try std.fmt.bufPrint(&b, ",\"line\":{d},\"severity\":\"{s}\",\"evidence\":", .{ fd.line, analysis.severityName(fd.severity) });
+            try out.appendSlice(mid);
+            try out.appendSlice(mq);
+            try out.append('}');
+            n += 1;
+            if (n >= 200) break;
+        }
+        if (n >= 200) break;
+    }
+    try out.appendSlice("]}");
+    return out.toOwnedSlice();
+}
+
+fn buildGitJson(gpa: std.mem.Allocator, io: std.Io, snap: *Snapshot, root: []const u8) ![]u8 {
+    var out = std.array_list.Managed(u8).init(gpa);
+    errdefer out.deinit();
+    var branch: []const u8 = "unknown";
+    var branch_buf: ?[]u8 = null;
+    defer if (branch_buf) |b| gpa.free(b);
+    var commits: usize = 0;
+    const cwd = std.Io.Dir.cwd();
+    if (std.Io.Dir.openDir(cwd, io, root, .{ .iterate = true })) |gd| {
+        var gdir = gd;
+        defer gdir.close(io);
+        if (gdir.readFileAlloc(io, ".git/HEAD", gpa, .limited(1024))) |head| {
+            defer gpa.free(head);
+            const t = std.mem.trim(u8, head, " \t\r\n");
+            if (std.mem.startsWith(u8, t, "ref: ")) {
+                if (std.mem.lastIndexOfScalar(u8, t, '/')) |li| {
+                    branch_buf = gpa.dupe(u8, t[li + 1 ..]) catch null;
+                    if (branch_buf) |bb| branch = bb;
+                }
+            }
+        } else |_| {}
+        if (gdir.readFileAlloc(io, ".git/logs/HEAD", gpa, .limited(10 * 1024 * 1024))) |log| {
+            defer gpa.free(log);
+            var lines = std.mem.splitSequence(u8, log, "\n");
+            while (lines.next()) |ln| {
+                if (ln.len >= 10) commits += 1;
+            }
+        } else |_| {}
+    } else |_| {}
+    const bq = try report_util.jsonString(gpa, branch);
+    defer gpa.free(bq);
+    try out.appendSlice("{\"branch\":");
+    try out.appendSlice(bq);
+    var b: [64]u8 = undefined;
+    const pre = try std.fmt.bufPrint(&b, ",\"commits\":{d},\"hotspots\":[", .{commits});
+    try out.appendSlice(pre);
+    // top-10 by dependents (insertion-ranked)
+    var order = std.array_list.Managed(usize).init(gpa);
+    defer order.deinit();
+    for (0..snap.paths.len) |i| order.append(i) catch break;
+    var shown: usize = 0;
+    while (shown < order.items.len and shown < 10) {
+        var best: usize = 0;
+        var best_v: usize = 0;
+        var first = true;
+        for (order.items) |idx| {
+            const v = snap.graph.rev.items[idx].items.len;
+            if (first or v > best_v) {
+                best = idx;
+                best_v = v;
+                first = false;
+            }
+        }
+        // remove best
+        var k: usize = 0;
+        while (k < order.items.len) : (k += 1) {
+            if (order.items[k] == best) {
+                _ = order.orderedRemove(k);
+                break;
+            }
+        }
+        if (shown > 0) try out.append(',');
+        const pq = try report_util.jsonString(gpa, snap.paths[best]);
+        defer gpa.free(pq);
+        try out.appendSlice("{\"path\":");
+        try out.appendSlice(pq);
+        const suf = try std.fmt.bufPrint(&b, ",\"dependents\":{d}}}", .{best_v});
+        try out.appendSlice(suf);
+        shown += 1;
+        if (shown >= 10) break;
+    }
+    try out.appendSlice("]}");
+    return out.toOwnedSlice();
+}
+
+fn buildImpactJson(gpa: std.mem.Allocator, snap: *Snapshot, fname: []const u8) ![]u8 {
+    const idx = findFileIdx(snap, fname) orelse return try gpa.dupe(u8, "{\"error\":\"file not found in index\"}");
+    var cx: u32 = 1;
+    if (snap.res.files.items[idx].facts) |*f| cx = f.complexity;
+    var imp = analysis.analyzeImpact(gpa, &snap.graph, snap.paths, idx, cx) catch return try gpa.dupe(u8, "{\"error\":\"impact failed\"}");
+    defer imp.deinit();
+    var out = std.array_list.Managed(u8).init(gpa);
+    errdefer out.deinit();
+    const fq = try report_util.jsonString(gpa, snap.paths[idx]);
+    defer gpa.free(fq);
+    try out.appendSlice("{\"file\":");
+    try out.appendSlice(fq);
+    var b: [128]u8 = undefined;
+    const pre = try std.fmt.bufPrint(&b, ",\"risk\":{d},\"direct\":{d},\"indirect\":{d},\"tests\":{d},\"reasons\":[", .{ imp.risk, imp.direct, imp.indirect, imp.tests });
+    try out.appendSlice(pre);
+    for (imp.reasons.items, 0..) |r, i| {
+        if (i > 0) try out.append(',');
+        const rq = try report_util.jsonString(gpa, r);
+        defer gpa.free(rq);
+        try out.appendSlice(rq);
+    }
+    try out.appendSlice("]}");
+    return out.toOwnedSlice();
+}
+
+const ReportBody = struct { body: []u8, ctype: []const u8 };
+
+fn buildReportBody(gpa: std.mem.Allocator, snap: *Snapshot, root: []const u8, fmt: []const u8) !ReportBody {
+    var out = std.array_list.Managed(u8).init(gpa);
+    errdefer out.deinit();
+    var b: [256]u8 = undefined;
+    if (std.mem.eql(u8, fmt, "html")) {
+        try out.appendSlice("<!DOCTYPE html><html><head><meta charset=utf-8><title>ZigLens Report</title></head><body>");
+        const head = try std.fmt.bufPrint(&b, "<h1>ZigLens Report — {s}</h1><p>Files {d} · Symbols {d}</p>", .{ root, snap.paths.len, snap.total_symbols });
+        try out.appendSlice(head);
+        try out.appendSlice("</body></html>");
+        return .{ .body = try out.toOwnedSlice(), .ctype = "text/html; charset=utf-8" };
+    }
+    if (std.mem.eql(u8, fmt, "csv")) {
+        try out.appendSlice("path,complexity,loc\n");
+        for (snap.complexity.items) |*c| {
+            const line = try std.fmt.bufPrint(&b, "{s},{d},{d}\n", .{ c.path, c.complexity, c.loc });
+            try out.appendSlice(line);
+        }
+        return .{ .body = try out.toOwnedSlice(), .ctype = "text/csv; charset=utf-8" };
+    }
+    // default md
+    const head = try std.fmt.bufPrint(&b, "# ZigLens Report — {s}\n\nFiles: {d}, Symbols: {d}, Deps: {d}\n", .{ root, snap.paths.len, snap.total_symbols, snap.graph.edges.items.len });
+    try out.appendSlice(head);
+    return .{ .body = try out.toOwnedSlice(), .ctype = "text/markdown; charset=utf-8" };
+}
+
 fn handleHttp(gpa: std.mem.Allocator, io: std.Io, stream: std.Io.net.Stream, snap: *Snapshot, root: []const u8, project_json: []const u8) !void {
     var rbuf: [8192]u8 = undefined;
     var wbuf: [8192]u8 = undefined;
@@ -1674,15 +2053,57 @@ fn handleHttp(gpa: std.mem.Allocator, io: std.Io, stream: std.Io.net.Stream, sna
         const tj = buildTreemapJson(gpa, snap) catch return error.WriteFailed;
         owned = tj;
         body = owned.?;
-    } else if (std.mem.eql(u8, target, "/api/v1/files") or std.mem.eql(u8, target, "/api/v1/dependencies") or std.mem.eql(u8, target, "/api/v1/architecture") or std.mem.eql(u8, target, "/api/v1/complexity") or std.mem.eql(u8, target, "/api/v1/security") or std.mem.eql(u8, target, "/api/v1/git") or std.mem.eql(u8, target, "/api/v1/impact") or std.mem.eql(u8, target, "/api/v1/symbols")) {
-        body = project_json; // v0.1: unified snapshot; per-endpoint shaping in Phase 2
+    } else if (std.mem.eql(u8, target, "/api/v1/symbols")) {
+        const sj = buildSymbolsJson(gpa, snap) catch return error.WriteFailed;
+        owned = sj;
+        body = owned.?;
+    } else if (std.mem.eql(u8, target, "/api/v1/deadcode")) {
+        const dj = buildDeadcodeJson(gpa, snap) catch return error.WriteFailed;
+        owned = dj;
+        body = owned.?;
+    } else if (std.mem.eql(u8, target, "/api/v1/complexity")) {
+        const cj = buildComplexityJson(gpa, snap) catch return error.WriteFailed;
+        owned = cj;
+        body = owned.?;
+    } else if (std.mem.eql(u8, target, "/api/v1/architecture")) {
+        const aj = buildArchitectureJson(gpa, snap) catch return error.WriteFailed;
+        owned = aj;
+        body = owned.?;
+    } else if (std.mem.eql(u8, target, "/api/v1/security")) {
+        const sj = buildSecurityJson(gpa, io, snap, root) catch return error.WriteFailed;
+        owned = sj;
+        body = owned.?;
+    } else if (std.mem.eql(u8, target, "/api/v1/git")) {
+        const gj = buildGitJson(gpa, io, snap, root) catch return error.WriteFailed;
+        owned = gj;
+        body = owned.?;
+    } else if (std.mem.startsWith(u8, target, "/api/v1/impact")) {
+        const q = queryParam(target, "file");
+        if (q == null) {
+            const be = "{\"error\":\"missing ?file= parameter\"}";
+            try writer.interface.print("HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n{s}", .{ be.len, be });
+            try writer.interface.flush();
+            return;
+        }
+        const fname = pctDecode(gpa, q.?) catch return error.WriteFailed;
+        defer gpa.free(fname);
+        const ij = buildImpactJson(gpa, snap, fname) catch return error.WriteFailed;
+        owned = ij;
+        body = owned.?;
+    } else if (std.mem.startsWith(u8, target, "/api/v1/report")) {
+        const fmt = queryParam(target, "format") orelse "md";
+        const rj = buildReportBody(gpa, snap, root, fmt) catch return error.WriteFailed;
+        owned = rj.body;
+        body = owned.?;
+        ctype = rj.ctype;
+    } else if (std.mem.eql(u8, target, "/api/v1/files") or std.mem.eql(u8, target, "/api/v1/dependencies")) {
+        body = project_json; // backward-compat aliases
     } else {
         const nf = "{\"error\":\"not-found\"}";
         try writer.interface.print("HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n{s}", .{ nf.len, nf });
         try writer.interface.flush();
         return;
     }
-    _ = root;
     try writer.interface.print("HTTP/1.1 200 OK\r\nContent-Type: {s}\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n", .{ ctype, body.len });
     try writer.interface.writeAll(body);
     try writer.interface.flush();
@@ -1804,7 +2225,7 @@ fn cmdSnapshot(gpa: std.mem.Allocator, io: std.Io, def_root: []const u8, flags: 
     else if (positional.len == 1 and !std.mem.eql(u8, positional[0], "create")) target = positional[0];
     var snap = buildSnapshot(gpa, io, target, flags.quiet) catch return 1;
     defer snap.deinit();
-    const js = buildProjectJson(gpa, &snap, target) catch return 1;
+    const js = buildProjectJson(gpa, io, &snap, target) catch return 1;
     defer gpa.free(js);
     const out = if (flags.output) |o| o else ".ziglens/snapshot.json";
     store.ensureDir(io) catch return 1;

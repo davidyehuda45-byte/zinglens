@@ -339,7 +339,7 @@ test "endpoints" {
 
 test "dotenv keys only" {
     const t = std.testing;
-    const src = "# c\nSTRIPE_KEY=sk_live_abc\nPORT=3000\n";
+    const src = "# c\nSTRIPE_KEY=sk_live_abc\nPORT=3000\n"; // ziglens-ignore SEC-001 (test fixture)
     var k = try parseDotEnv(t.allocator, src);
     defer {
         for (k.items) |*x| x.deinit(t.allocator);

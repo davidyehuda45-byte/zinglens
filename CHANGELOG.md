@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.6.0 — Real dashboard pages
+
+- Fixed project-JSON tail bug; added `top_complexity`, `recommendations`,
+  `security_count` fields (Overview cards + table now populated)
+- Dedicated endpoints: symbols, deadcode, complexity, architecture, security,
+  git, impact (`?file=`, 400 without), report (`?format=`) — no more raw dumps
+- Every dashboard page renders real tables/forms; impact has file form;
+  reports page has download links; privacy page bilingual
+- Suppression for detect.zig test fixture; security self-scan clean
+
 ## v0.5.1 — Output correctness + hardening audit
 
 - Results to stdout, diagnostics to stderr: `--json > file` and `jq` pipelines work
