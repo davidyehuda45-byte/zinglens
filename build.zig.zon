@@ -1,0 +1,13 @@
+.{
+    .name = .ziglens,
+    .version = "0.1.0",
+    .fingerprint = 0xdc03820bbc518d92,
+    .minimum_zig_version = "0.17.0",
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "README.md",
+        "LICENSE",
+    },
+}

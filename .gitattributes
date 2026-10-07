@@ -1,0 +1,9 @@
+*.zig text eol=lf
+*.md text eol=lf
+*.toml text eol=lf
+*.yml text eol=lf
+*.sh text eol=lf
+*.ps1 text eol=crlf
+*.ts text eol=lf
+*.py text eol=lf
+*.js text eol=lf

@@ -1,0 +1,7 @@
+.zig-cache/
+zig-out/
+.ziglens/
+ziglens-export/
+*.exe
+.DS_Store
+Thumbs.db

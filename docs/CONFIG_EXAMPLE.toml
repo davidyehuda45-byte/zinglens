@@ -1,0 +1,18 @@
+#pragma once — sample config (Phase 2: .ziglens.toml parsing; v0.1 shows defaults)
+
+[project]
+name = "MyProject"
+
+[analysis]
+dead_code = true
+complexity = true
+security = true
+git = true
+
+[ignore]
+paths = ["node_modules", "vendor", "dist", ".zig-cache", "zig-out"]
+
+[limits]
+max_file_mb = 50
+max_files = 200000
+max_depth = 64
